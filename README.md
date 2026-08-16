@@ -1,3 +1,7 @@
+# IMPORTANT
+This version of Reginleif will not compile correctly, unless provided with the Steamworks SDK.
+This is intended only for Take Your Time Studios.
+
 # Reginleif Engine
 Blah blah blah, insert boilerplate, you've seen this a ton of times. This fork was made because I was a little fed up with how absolutely
 glacial Godot is at accepting PRs and how slow work was on GDScript. Now, don't get me wrong, I fucking love Godot, but I think GDScript 
