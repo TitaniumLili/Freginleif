@@ -667,7 +667,14 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				} else {
 					if (callee->type == GDScriptParser::Node::IDENTIFIER) {
 						// Self function call.
-						if (ClassDB::has_method(codegen.script->native->get_name(), call->function_name)) {
+                        if (codegen.is_native_impl_method) {
+                            GDScriptCodeGenerator::Address self = codegen.parameters[StringName("@impl_self")];
+                            if (is_awaited) {
+                                gen->write_call_async(result, self, call->function_name, arguments);
+                            } else {
+                                gen->write_call(result, self, call->function_name, arguments);
+                            }
+                        } else if (codegen.script->native.is_valid() && ClassDB::has_method(codegen.script->native->get_name(), call->function_name)) {
 							// Native method, use faster path.
 							GDScriptCodeGenerator::Address self;
 							self.mode = GDScriptCodeGenerator::Address::SELF;
@@ -715,7 +722,23 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 									gen->write_call_native_static(result, class_name, subscript->attribute->name, arguments);
 								}
 							} else {
-								GDScriptCodeGenerator::Address base = _parse_expression(codegen, r_error, subscript->base);
+								GDScriptCodeGenerator::Address base;
+								if (call->is_static && subscript->base->type == GDScriptParser::Node::IDENTIFIER) {
+									const StringName base_identifier = static_cast<GDScriptParser::IdentifierNode*>(subscript->base)->name;
+									if (ScriptServer::is_global_class(base_identifier)) {
+										const String global_class_path = ScriptServer::get_global_class_path(base_identifier);
+										if (ResourceLoader::get_resource_type(global_class_path) == "GDScript") {
+											Error err = OK;
+											Ref<GDScript> script = GDScriptCache::get_full_script(global_class_path, err);
+											if (err == OK && script.is_valid()) {
+												base = codegen.add_constant(script);
+											}
+										}
+									}
+								}
+								if (base.mode == GDScriptCodeGenerator::Address::NIL) {
+									base = _parse_expression(codegen, r_error, subscript->base);
+								}
 								if (r_error) {
 									return GDScriptCodeGenerator::Address();
 								}
@@ -901,8 +924,8 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				}
 				if (base_enum_type.kind == GDScriptDataType::BUILTIN && base_enum_type.enum_native_type != StringName()) {
 
-					///bare `x.method_name` (no call, but instead callable access) on an enum 
-					///runtime can't disambiguate which enum a plain int came from, 
+					///bare `x.method_name` (no call, but instead callable access) on an enum
+					///runtime can't disambiguate which enum a plain int came from,
 					///so resolve the impl function now, at compile time
 					///while we still have the enum's identity, same shit as above
 
@@ -2433,8 +2456,8 @@ GDScriptFunction *GDScriptCompiler::_parse_function(Error &r_error, GDScript *p_
 
 	if (p_func_is_native_impl_method) {
 		///implicit leading `self` slot. untyped (Variant), no default, invisible to method_info
-		///so reflection/autocomplete/error/whatever_the_fuck messages never show this. 
-		///codegen.parameters gets an entry keyed by a name no GDScript identifier 
+		///so reflection/autocomplete/error/whatever_the_fuck messages never show this.
+		///codegen.parameters gets an entry keyed by a name no GDScript identifier
 		///can ever collide with.
 		GDScriptDataType self_type; ///VARIANT kind by default
 		uint32_t self_addr = codegen.generator->add_parameter("@impl_self", false, self_type);
