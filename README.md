@@ -3,11 +3,11 @@ This version of Reginleif will not compile correctly, unless provided with the S
 This is intended only for Take Your Time Studios.
 
 # Reginleif Engine
-Blah blah blah, insert boilerplate, you've seen this a ton of times. This fork was made because I was a little fed up with how absolutely
-glacial Godot is at accepting PRs and how slow work was on GDScript. Now, don't get me wrong, I fucking love Godot, but I think GDScript 
-is the absolute worst thing about it. But instead of adding a whole new language, this fork will focus on improving GDScript, because I'd
-be fucking braindead if I said GDScript was completely useless. It is EXTREMELY good for rapid-fucking-iteration. So I don't want to give up
-on this language yet.
+hello hello! this is a little fork made for me and my friends! 'twas made because GDScript was a *little* lacking, and i discovered i had the free will to do things my way! what *is* my way, you ask? well, i've always had a love-hate relationship with GDScript. i truly love the rapid iteration capabilities it offers, but ah well, it lacks a *few* features, *ahem*, to help build the kind of systems heavy games i want to make.
+
+tell ya what, mate. while writing gdscript across half a decade, it felt like my dumbass was being forced to accept a tradeoff that the developers had made. the tradeoff being that the language optimised the developer experience for the first fifty hours of gamedev, and did so by horribly compromising on the next thousand.
+
+i need to feel confident in the code that i write as i am indeed human and make mistakes! sound reasonable? hey, same, we might become good friends then!
 
 ## Who is this for?
 certainly not for everyone! that's pretty intentional.
@@ -37,6 +37,7 @@ If you don't want to go through the hassle of all that, I periodically throw a f
 - exhaustive pattern matching
 
 ## Shit I added
+- type narrowing
 - generics (currently only type-erased)
 - nested types
 - completely optional braces {} based scoping
@@ -44,6 +45,37 @@ If you don't want to go through the hassle of all that, I periodically throw a f
 - some minor syntax niceties
 
 ## How to use the shit I added
+
+### Type Narrowing
+Not a feature you 'use' per se, but static analysis now becomes smarter.
+`is Type` type checks now 'narrow' the type in their branch.
+
+```gdscript
+var node := get_node(...)
+if x is Node2D:
+    print(x.position)
+```
+This marks the third line to be type unsafe in vanilla GDScript, and this can even be seen in the editor, as the line number on the left side of the code editor becomes unlit, showing that the analyser could not prove type safety. It even triggers UNSAFE_PROPERTY_ACCESS and related warnings! 
+But this is a problem, because, this operation provably IS safe, so the warning is misleading! it only executes if x is that type, and thus, x's type gets 'narrowed.'
+
+This fork is narrowing aware! It does indeed narrow the above case, along with the following cases:
+
+```gdscript
+if x is Node2D and x.get_position().x > 20:
+```
+
+```gdscript
+if x is not Node2D: return
+print(x.position)
+```
+
+```gdscript
+if x is not Node2D:
+    pass
+else:
+    print(x.position)
+```
+All the above cases become narrow-aware and thus type safe, along with full code complete! This extends to `is Trait` style checks too (discussed soon in this doc).
 
 ### Generics
 
