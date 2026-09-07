@@ -172,6 +172,10 @@ public:
 		OPCODE_GET_NAMED_VALIDATED,
 		OPCODE_SET_MEMBER,
 		OPCODE_GET_MEMBER,
+		OPCODE_SET_MEMBER_VALIDATED,
+		OPCODE_GET_MEMBER_VALIDATED,
+		OPCODE_SET_NAMED_MEMBER_VALIDATED,
+		OPCODE_GET_NAMED_MEMBER_VALIDATED,
 		OPCODE_SET_STATIC_VARIABLE, // Only for GDScript.
 		OPCODE_GET_STATIC_VARIABLE, // Only for GDScript.
 		OPCODE_ASSIGN,
@@ -373,6 +377,8 @@ private:
 	StringName source;
 	bool _static = false;
 	Vector<GDScriptDataType> argument_types;
+	// NOTE: This is the expected return type, but coroutines can actually return a `GDScriptFunctionState` object.
+	// In VM it is currently only used to return a default value on error (as a fallback).
 	GDScriptDataType return_type;
 	MethodInfo method_info;
 	Variant rpc_config;

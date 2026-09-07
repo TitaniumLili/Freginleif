@@ -91,7 +91,7 @@ static bool _profile_count_as_native(const Object *p_base_obj, const StringName 
 	if ((p_methodname == SNAME("new") && cname == GDScript::get_class_static()) || p_methodname == CoreStringName(call)) {
 		return false;
 	}
-	return ClassDB::class_exists(cname) && ClassDB::has_method(cname, p_methodname, false);
+	return ClassDB::has_method(cname, p_methodname, false);
 }
 
 static String _get_element_type(Variant::Type builtin_type, const StringName &native_type, const Ref<Script> &script_type) {
@@ -390,6 +390,10 @@ void (*type_init_function_table[])(Variant *) = {
 		&&OPCODE_GET_NAMED_VALIDATED, \
 		&&OPCODE_SET_MEMBER, \
 		&&OPCODE_GET_MEMBER, \
+		&&OPCODE_SET_MEMBER_VALIDATED, \
+		&&OPCODE_GET_MEMBER_VALIDATED, \
+		&&OPCODE_SET_NAMED_MEMBER_VALIDATED, \
+		&&OPCODE_GET_NAMED_MEMBER_VALIDATED, \
 		&&OPCODE_SET_STATIC_VARIABLE, \
 		&&OPCODE_GET_STATIC_VARIABLE, \
 		&&OPCODE_ASSIGN, \
@@ -1565,6 +1569,154 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				}
 #endif
 				ip += 3;
+			}
+			DISPATCH_OPCODE;
+
+			OPCODE(OPCODE_SET_MEMBER_VALIDATED) {
+				CHECK_SPACE(3);
+				GET_VARIANT_PTR(src, 0);
+
+				int index_method = _code_ptr[ip + 2];
+				GD_ERR_BREAK(index_method < 0 || index_method >= _methods_count);
+				const MethodBind* setter = _methods_ptr[index_method];
+
+				int baked_index = _code_ptr[ip + 3];
+
+				Callable::CallError ce;
+				if (baked_index >= 0) {
+					Variant idx = baked_index;
+					const Variant* args[2] = { &idx, src };
+					setter->call(p_instance->owner, args, 2, ce);
+				} else {
+					const Variant* args[1] = { src };
+					setter->call(p_instance->owner, args, 1, ce);
+				}
+
+#ifdef DEBUG_ENABLED
+				if (ce.error != Callable::CallError::CALL_OK) {
+					err_text = "Error setting property '" + String(setter->get_name()) + "' with value of type " + Variant::get_type_name(src->get_type()) + ".";
+					OPCODE_BREAK;
+				}
+#endif
+				ip += 4;
+			}
+			DISPATCH_OPCODE;
+
+			OPCODE(OPCODE_GET_MEMBER_VALIDATED) {
+				CHECK_SPACE(3);
+				GET_VARIANT_PTR(dst, 0);
+
+				int index_method = _code_ptr[ip + 2];
+				GD_ERR_BREAK(index_method < 0 || index_method >= _methods_count);
+				const MethodBind* getter = _methods_ptr[index_method];
+
+				int baked_index = _code_ptr[ip + 3];
+
+				Callable::CallError ce;
+				if (baked_index >= 0) {
+					Variant idx = baked_index;
+					const Variant* args[1] = { &idx };
+					*dst = getter->call(p_instance->owner, args, 1, ce);
+				} else {
+					*dst = getter->call(p_instance->owner, nullptr, 0, ce);
+				}
+
+#ifdef DEBUG_ENABLED
+				if (ce.error != Callable::CallError::CALL_OK) {
+					err_text = "Error getting property '" + String(getter->get_name()) + "'.";
+					OPCODE_BREAK;
+				}
+#endif
+				ip += 4;
+			}
+			DISPATCH_OPCODE;
+
+			OPCODE(OPCODE_SET_NAMED_MEMBER_VALIDATED) {
+				CHECK_SPACE(4);
+				GET_VARIANT_PTR(base, 0);
+				GET_VARIANT_PTR(src, 1);
+
+				int index_method = _code_ptr[ip + 3];
+				GD_ERR_BREAK(index_method < 0 || index_method >= _methods_count);
+				const MethodBind* setter = _methods_ptr[index_method];
+
+				int baked_index = _code_ptr[ip + 4];
+
+#ifdef DEBUG_ENABLED
+				bool freed = false;
+				Object* base_obj = base->get_validated_object_with_check(freed);
+				if (freed) {
+					err_text = "Cannot set property '" + String(setter->get_name()) + "' on a previously freed instance.";
+					OPCODE_BREAK;
+				} else if (!base_obj) {
+					err_text = "Cannot set property '" + String(setter->get_name()) + "' on a null value.";
+					OPCODE_BREAK;
+				}
+#else
+				Object* base_obj = base->operator Object*();
+#endif
+
+				Callable::CallError ce;
+				if (baked_index >= 0) {
+					Variant idx = baked_index;
+					const Variant* args[2] = { &idx, src };
+					setter->call(base_obj, args, 2, ce);
+				} else {
+					const Variant* args[1] = { src };
+					setter->call(base_obj, args, 1, ce);
+				}
+
+#ifdef DEBUG_ENABLED
+				if (ce.error != Callable::CallError::CALL_OK) {
+					err_text = "Error setting property '" + String(setter->get_name()) + "' with value of type " + Variant::get_type_name(src->get_type()) + ".";
+					OPCODE_BREAK;
+				}
+#endif
+				ip += 5;
+			}
+			DISPATCH_OPCODE;
+
+			OPCODE(OPCODE_GET_NAMED_MEMBER_VALIDATED) {
+				CHECK_SPACE(4);
+				GET_VARIANT_PTR(base, 0);
+				GET_VARIANT_PTR(dst, 1);
+
+				int index_method = _code_ptr[ip + 3];
+				GD_ERR_BREAK(index_method < 0 || index_method >= _methods_count);
+				const MethodBind* getter = _methods_ptr[index_method];
+
+				int baked_index = _code_ptr[ip + 4];
+
+#ifdef DEBUG_ENABLED
+				bool freed = false;
+				Object* base_obj = base->get_validated_object_with_check(freed);
+				if (freed) {
+					err_text = "Cannot get property '" + String(getter->get_name()) + "' on a previously freed instance.";
+					OPCODE_BREAK;
+				} else if (!base_obj) {
+					err_text = "Cannot get property '" + String(getter->get_name()) + "' on a null value.";
+					OPCODE_BREAK;
+				}
+#else
+				Object* base_obj = base->operator Object*();
+#endif
+
+				Callable::CallError ce;
+				if (baked_index >= 0) {
+					Variant idx = baked_index;
+					const Variant* args[1] = { &idx };
+					*dst = getter->call(base_obj, args, 1, ce);
+				} else {
+					*dst = getter->call(base_obj, nullptr, 0, ce);
+				}
+
+#ifdef DEBUG_ENABLED
+				if (ce.error != Callable::CallError::CALL_OK) {
+					err_text = "Error getting property '" + String(getter->get_name()) + "'.";
+					OPCODE_BREAK;
+				}
+#endif
+				ip += 5;
 			}
 			DISPATCH_OPCODE;
 

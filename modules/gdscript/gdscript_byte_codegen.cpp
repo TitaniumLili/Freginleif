@@ -73,6 +73,15 @@ uint32_t GDScriptByteCodeGenerator::add_local(const StringName &p_name, const GD
 	return stack_pos;
 }
 
+uint32_t GDScriptByteCodeGenerator::reuse_local_slot(const StringName& p_name, const GDScriptDataType& p_type, uint32_t p_existing_stack_pos) {
+	int index = (int)p_existing_stack_pos - GDScriptFunction::FIXED_ADDRESSES_MAX;
+	ERR_FAIL_INDEX_V(index, locals.size(), add_local(p_name, p_type));
+	locals.write[index] = StackSlot(p_type.builtin_type, p_type.can_contain_object());
+	add_stack_identifier(p_name, p_existing_stack_pos);
+	dirty_locals.insert(p_existing_stack_pos);
+	return p_existing_stack_pos;
+}
+
 uint32_t GDScriptByteCodeGenerator::add_local_constant(const StringName &p_name, const Variant &p_constant) {
 	int index = add_or_get_constant(p_constant);
 	local_constants[p_name] = index;
@@ -943,6 +952,36 @@ void GDScriptByteCodeGenerator::write_get_member(const Address &p_target, const 
 	append_opcode(GDScriptFunction::OPCODE_GET_MEMBER);
 	append(p_target);
 	append(p_name);
+}
+
+void GDScriptByteCodeGenerator::write_set_member_validated(const Address& p_value, const MethodBind* p_setter, int p_index) {
+	append_opcode(GDScriptFunction::OPCODE_SET_MEMBER_VALIDATED);
+	append(p_value);
+	append(p_setter);
+	append(p_index);
+}
+
+void GDScriptByteCodeGenerator::write_get_member_validated(const Address& p_target, const MethodBind* p_getter, int p_index) {
+	append_opcode(GDScriptFunction::OPCODE_GET_MEMBER_VALIDATED);
+	append(p_target);
+	append(p_getter);
+	append(p_index);
+}
+
+void GDScriptByteCodeGenerator::write_set_named_member_validated(const Address& p_base, const Address& p_value, const MethodBind* p_setter, int p_index) {
+	append_opcode(GDScriptFunction::OPCODE_SET_NAMED_MEMBER_VALIDATED);
+	append(p_base);
+	append(p_value);
+	append(p_setter);
+	append(p_index);
+}
+
+void GDScriptByteCodeGenerator::write_get_named_member_validated(const Address& p_target, const Address& p_base, const MethodBind* p_getter, int p_index) {
+	append_opcode(GDScriptFunction::OPCODE_GET_NAMED_MEMBER_VALIDATED);
+	append(p_base);
+	append(p_target);
+	append(p_getter);
+	append(p_index);
 }
 
 void GDScriptByteCodeGenerator::write_set_static_variable(const Address &p_value, const Address &p_class, int p_index) {
@@ -1941,7 +1980,9 @@ void GDScriptByteCodeGenerator::write_return(const Address &p_return_value, bool
 		return;
 	}
 
-	switch (function->return_type.kind) {
+	const GDScriptDataType &return_type = function->return_type;
+
+	switch (return_type.kind) {
 		case GDScriptDataType::VARIANT: {
 			ERR_PRINT("Compiler bug: Unresolved return.");
 
@@ -1950,43 +1991,49 @@ void GDScriptByteCodeGenerator::write_return(const Address &p_return_value, bool
 			append(p_return_value);
 		} break;
 		case GDScriptDataType::BUILTIN: {
-			if (function->return_type.builtin_type == Variant::ARRAY && function->return_type.has_container_element_type(0)) {
-				const GDScriptDataType &element_type = function->return_type.get_container_element_type(0);
+			if (return_type.builtin_type == Variant::ARRAY && return_type.has_container_element_type(0)) {
+				const GDScriptDataType &element_type = return_type.get_container_element_type(0);
+
 				append_opcode(GDScriptFunction::OPCODE_RETURN_TYPED_ARRAY);
 				append(p_return_value);
 				append(get_constant_pos(element_type.script_type) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
 				append(element_type.builtin_type);
 				append(element_type.native_type);
-				} else if (function->return_type.builtin_type == Variant::DICTIONARY && function->return_type.has_container_element_types()) {
-					const GDScriptDataType &key_type = function->return_type.get_container_element_type_or_variant(0);
-					const GDScriptDataType &value_type = function->return_type.get_container_element_type_or_variant(1);
-					append_opcode(GDScriptFunction::OPCODE_RETURN_TYPED_DICTIONARY_NESTED);
-					append(p_return_value);
-					append(get_constant_pos(key_type.script_type) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
-					append(get_constant_pos(value_type.script_type) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
-					append(key_type.builtin_type);
-					append(key_type.native_type);
-					append(value_type.builtin_type);
-					append(value_type.native_type);
+			} else if (return_type.builtin_type == Variant::DICTIONARY && return_type.has_container_element_types()) {
+				const GDScriptDataType &key_type = return_type.get_container_element_type_or_variant(0);
+				const GDScriptDataType &value_type = return_type.get_container_element_type_or_variant(1);
+				const bool nested_typed = key_type.has_container_element_types() || value_type.has_container_element_types();
+
+				append_opcode(nested_typed ? GDScriptFunction::OPCODE_RETURN_TYPED_DICTIONARY_NESTED : GDScriptFunction::OPCODE_RETURN_TYPED_DICTIONARY);
+				append(p_return_value);
+				append(get_constant_pos(key_type.script_type) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
+				append(get_constant_pos(value_type.script_type) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
+				append(key_type.builtin_type);
+				append(key_type.native_type);
+				append(value_type.builtin_type);
+				append(value_type.native_type);
+				if (nested_typed) {
 					append(get_constant_pos(_encode_nested_dictionary_type(key_type, value_type)) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS));
-				} else {
+				}
+			} else {
 				append_opcode(GDScriptFunction::OPCODE_RETURN_TYPED_BUILTIN);
 				append(p_return_value);
-				append(function->return_type.builtin_type);
+				append(return_type.builtin_type);
 			}
 		} break;
 		case GDScriptDataType::NATIVE: {
+			const int nc_idx = GDScriptLanguage::get_singleton()->get_global_map()[return_type.native_type];
+			const Variant nc = GDScriptLanguage::get_singleton()->get_global_array()[nc_idx];
+			const int class_idx = get_constant_pos(nc) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS);
+
 			append_opcode(GDScriptFunction::OPCODE_RETURN_TYPED_NATIVE);
 			append(p_return_value);
-			int class_idx = GDScriptLanguage::get_singleton()->get_global_map()[function->return_type.native_type];
-			Variant nc = GDScriptLanguage::get_singleton()->get_global_array()[class_idx];
-			class_idx = get_constant_pos(nc) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS);
 			append(class_idx);
 		} break;
 		case GDScriptDataType::SCRIPT:
 		case GDScriptDataType::GDSCRIPT: {
-			Variant script = function->return_type.script_type;
-			int script_idx = get_constant_pos(script) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS);
+			const Variant script = return_type.script_type;
+			const int script_idx = get_constant_pos(script) | (GDScriptFunction::ADDR_TYPE_CONSTANT << GDScriptFunction::ADDR_BITS);
 
 			append_opcode(GDScriptFunction::OPCODE_RETURN_TYPED_SCRIPT);
 			append(p_return_value);
@@ -2055,15 +2102,16 @@ void GDScriptByteCodeGenerator::clear_address(const Address &p_address) {
 		write_assign_null(p_address);
 	}
 
-	if (p_address.mode == Address::LOCAL_VARIABLE) {
-		dirty_locals.erase(p_address.address);
-	}
 }
 
 // Returns `true` if the local has been reused and not cleaned up with `clear_address()`.
 bool GDScriptByteCodeGenerator::is_local_dirty(const Address &p_address) const {
 	ERR_FAIL_COND_V(p_address.mode != Address::LOCAL_VARIABLE, false);
 	return dirty_locals.has(p_address.address);
+}
+
+void GDScriptByteCodeGenerator::clear_dirty(const Address& p_address) {
+	dirty_locals.erase(p_address.address);
 }
 
 GDScriptByteCodeGenerator::~GDScriptByteCodeGenerator() {
