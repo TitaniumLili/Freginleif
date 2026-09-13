@@ -728,6 +728,17 @@ Error Main::test_setup() {
 	NavigationServer3DManager::initialize_server_manager();
 #endif // NAVIGATION_3D_DISABLED
 
+	bool tests_exist = DirAccess::dir_exists_absolute(OS::get_singleton()->get_cwd().path_join("tests").path_join("data"));
+	if (!tests_exist) {
+		if (OS::get_singleton()->get_cwd().ends_with("bin")) {
+			// Likely running from `bin`, try changing cwd:
+			OS::get_singleton()->set_cwd(OS::get_singleton()->get_cwd().get_base_dir());
+			tests_exist = DirAccess::dir_exists_absolute(OS::get_singleton()->get_cwd().path_join("tests").path_join("data"));
+		}
+		ERR_FAIL_COND_V_MSG(!tests_exist, FAILED, "Test data not found, tests should be run from the Godot source repository root.");
+		WARN_PRINT("Tests should be run from the Godot source repository root, working directory was changed to " + OS::get_singleton()->get_cwd());
+	}
+
 	// From `Main::setup2()`.
 	register_early_core_singletons();
 	initialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
@@ -2890,6 +2901,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/hand_tracking_unobstructed_data_source", false); // XR_HAND_TRACKING_DATA_SOURCE_UNOBSTRUCTED_EXT
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/hand_tracking_controller_data_source", false); // XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT
 	GLOBAL_DEF_RST_BASIC("xr/openxr/extensions/hand_interaction_profile", false);
+	GLOBAL_DEF_BASIC("xr/openxr/extensions/spatial_container/enabled", false);
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "xr/openxr/extensions/spatial_container/bounds_mode", PROPERTY_HINT_ENUM, "Bounded,Immersive"), "0");
+	GLOBAL_DEF_BASIC(PropertyInfo(Variant::VECTOR3, "xr/openxr/extensions/spatial_container/bounds", PROPERTY_HINT_NONE, ""), Vector3(0.5f, 0.5f, 0.5f));
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/spatial_entity/enabled", false);
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/spatial_entity/enable_spatial_anchors", false);
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/spatial_entity/enable_persistent_anchors", false);
