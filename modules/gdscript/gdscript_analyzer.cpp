@@ -1283,6 +1283,12 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 	class_type.native_type = result.native_type;
 	p_class->self_type = class_type;
 
+	if (result.kind == GDScriptParser::DataType::CLASS && result.class_type != nullptr) {
+		GDScriptCache::register_subclass_edge(
+				result.class_type->fqcn, result.class_type->self_type.script_path,
+				p_class->fqcn, parser->script_path);
+	}
+
 	// Apply annotations.
 	for (GDScriptParser::AnnotationNode *&E : p_class->annotations) {
 		resolve_annotation(E);

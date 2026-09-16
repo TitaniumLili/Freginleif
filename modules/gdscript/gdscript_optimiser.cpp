@@ -32,221 +32,86 @@
 /// Licensed under the MIT License, same terms as the Godot engine.
 
 #include "gdscript_optimiser.h"
+#include "core/config/project_settings.h"
 
-HashMap<const GDScriptParser::Node*, GDScriptOptimiser::VarLifetime> GDScriptOptimiser::compute_lifetimes(const GDScriptParser::SuiteNode* p_block) {
-	HashMap<const GDScriptParser::Node*, VarLifetime> lifetimes;
-	if (p_block == nullptr) {
-		return lifetimes;
-	}
-	for (const GDScriptParser::Node* stmt : p_block->statements) {
-		_visit(stmt, lifetimes);
-	}
-	return lifetimes;
-}
+uint64_t GDScriptOptimiser::_generation_counter = 0;
 
-void GDScriptOptimiser::_visit_identifier(const GDScriptParser::IdentifierNode* p_id, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use, bool p_is_write) {
-	if (p_id == nullptr) {
+void GDScriptOptimiser::record_use(HashMap<const GDScriptParser::Node*, VarLifetime>& r_lifetimes, const GDScriptParser::Node* p_key, int p_ip, bool p_is_write) {
+	if (p_key == nullptr) {
 		return;
 	}
 
-	const GDScriptParser::Node* key = nullptr;
-	if (p_id->source == GDScriptParser::IdentifierNode::LOCAL_VARIABLE && p_id->variable_source != nullptr) {
-		key = p_id->variable_source;
-	} else if (p_id->source == GDScriptParser::IdentifierNode::LOCAL_BIND && p_id->bind_source != nullptr) {
-		key = p_id->bind_source;
-	} else {
-		return;
-	}
-
-	VarLifetime& lt = r_last_use[key];
+	VarLifetime& lt = r_lifetimes[p_key];
 	if (p_is_write) {
-		if (p_id->start_line > lt.last_write) {
-			lt.last_write = p_id->start_line;
+		if (p_ip > lt.last_write_ip) {
+			lt.last_write_ip = p_ip;
 		}
 	} else {
-		if (p_id->start_line > lt.last_read) {
-			lt.last_read = p_id->start_line;
+		if (p_ip > lt.last_read_ip) {
+			lt.last_read_ip = p_ip;
 		}
 	}
 }
 
-///helper that reaches into EVERY SINGLE FUCKING PARSED NODE TYPE ever 
-void GDScriptOptimiser::_visit(const GDScriptParser::Node* p_node, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use) {
-	if (p_node == nullptr) {
-		return;
+///chokepoint for the entire SSR (stack slot reuse) feature!
+GDScriptOptimiser::SlotDecision GDScriptOptimiser::try_reuse_slot(SiblingSlotPool& r_pool, int p_current_ip, bool p_eligible_for_reuse, uint32_t p_stack_floor, uint32_t p_locals_ceiling) {
+	SlotDecision decision;
+
+	static bool ssr_enabled_cached = false;
+	static bool ssr_enabled_resolved = false;
+	if (!ssr_enabled_resolved) {
+		ssr_enabled_cached = GLOBAL_DEF("reginleif/optimisations/enable_stack_slot_reuse", true);
+		ssr_enabled_resolved = true;
+	}
+	if (!ssr_enabled_cached) {
+		return decision;
 	}
 
-	switch (p_node->type) {
-		case GDScriptParser::Node::IDENTIFIER: {
-			_visit_identifier(static_cast<const GDScriptParser::IdentifierNode*>(p_node), r_last_use, false);
-		} break;
-		case GDScriptParser::Node::ASSIGNMENT: {
-            ///yep, i've got the free will to ignore the fucking 'never auto' rule now
-            ///took me all this time to finally break free from upstream hell
-			const auto* n = static_cast<const GDScriptParser::AssignmentNode*>(p_node);
-			if (n->assignee->type == GDScriptParser::Node::IDENTIFIER) {
-				_visit_identifier(static_cast<const GDScriptParser::IdentifierNode*>(n->assignee), r_last_use, true);
-			}
-			_visit(n->assigned_value, r_last_use);
-		} break;
-		case GDScriptParser::Node::AWAIT: {
-			_visit(static_cast<const GDScriptParser::AwaitNode*>(p_node)->to_await, r_last_use);
-		} break;
-		case GDScriptParser::Node::BINARY_OPERATOR: {
-			const auto* n = static_cast<const GDScriptParser::BinaryOpNode*>(p_node);
-			_visit(n->left_operand, r_last_use);
-			_visit(n->right_operand, r_last_use);
-		} break;
-		case GDScriptParser::Node::UNARY_OPERATOR: {
-			_visit(static_cast<const GDScriptParser::UnaryOpNode*>(p_node)->operand, r_last_use);
-		} break;
-		case GDScriptParser::Node::TERNARY_OPERATOR: {
-			const auto* n = static_cast<const GDScriptParser::TernaryOpNode*>(p_node);
-			_visit(n->condition, r_last_use);
-			_visit(n->true_expr, r_last_use);
-			_visit(n->false_expr, r_last_use);
-		} break;
-		case GDScriptParser::Node::CALL: {
-			const auto* n = static_cast<const GDScriptParser::CallNode*>(p_node);
-			_visit(n->callee, r_last_use);
-			for (const GDScriptParser::ExpressionNode* arg : n->arguments) {
-				_visit(arg, r_last_use);
-			}
-		} break;
-		case GDScriptParser::Node::CAST: {
-			_visit(static_cast<const GDScriptParser::CastNode*>(p_node)->operand, r_last_use);
-		} break;
-		case GDScriptParser::Node::SUBSCRIPT: {
-			const auto* n = static_cast<const GDScriptParser::SubscriptNode*>(p_node);
-			_visit(n->base, r_last_use);
-			if (!n->is_attribute) {
-				_visit(n->index, r_last_use);
-			}
-		} break;
-		case GDScriptParser::Node::ARRAY: {
-			for (const GDScriptParser::ExpressionNode* elem : static_cast<const GDScriptParser::ArrayNode*>(p_node)->elements) {
-				_visit(elem, r_last_use);
-			}
-		} break;
-		case GDScriptParser::Node::DICTIONARY: {
-			for (const GDScriptParser::DictionaryNode::Pair& pair : static_cast<const GDScriptParser::DictionaryNode*>(p_node)->elements) {
-				_visit(pair.key, r_last_use);
-				_visit(pair.value, r_last_use);
-			}
-		} break;
-		case GDScriptParser::Node::PRELOAD: {
-			_visit(static_cast<const GDScriptParser::PreloadNode*>(p_node)->path, r_last_use);
-		} break;
-		case GDScriptParser::Node::ASSERT: {
-			const auto* n = static_cast<const GDScriptParser::AssertNode*>(p_node);
-			_visit(n->condition, r_last_use);
-			_visit(n->message, r_last_use);
-		} break;
-		case GDScriptParser::Node::RETURN: {
-			_visit(static_cast<const GDScriptParser::ReturnNode*>(p_node)->return_value, r_last_use);
-		} break;
-		case GDScriptParser::Node::VARIABLE: {
-			_visit(static_cast<const GDScriptParser::VariableNode*>(p_node)->initializer, r_last_use);
-		} break;
-		case GDScriptParser::Node::LAMBDA: {
-			for (const GDScriptParser::IdentifierNode* cap : static_cast<const GDScriptParser::LambdaNode*>(p_node)->captures) {
-				_visit_identifier(cap, r_last_use, false);
-			}
-		} break;
-		case GDScriptParser::Node::TYPE_TEST: {
-			_visit(static_cast<const GDScriptParser::TypeTestNode*>(p_node)->operand, r_last_use);
-		} break;
-		case GDScriptParser::Node::IF: {
-			const auto* n = static_cast<const GDScriptParser::IfNode*>(p_node);
-			_visit(n->condition, r_last_use);
-			if (n->true_block != nullptr) {
-				for (const GDScriptParser::Node* s : n->true_block->statements) {
-					_visit(s, r_last_use);
-				}
-			}
-			if (n->false_block != nullptr) {
-				for (const GDScriptParser::Node* s : n->false_block->statements) {
-					_visit(s, r_last_use);
-				}
-			}
-		} break;
-		case GDScriptParser::Node::FOR: {
-			const auto* n = static_cast<const GDScriptParser::ForNode*>(p_node);
-			_visit(n->list, r_last_use);
-			if (n->loop != nullptr) {
-				for (const GDScriptParser::Node* s : n->loop->statements) {
-					_visit(s, r_last_use);
-				}
-			}
-		} break;
-		case GDScriptParser::Node::WHILE: {
-			const auto* n = static_cast<const GDScriptParser::WhileNode*>(p_node);
-			_visit(n->condition, r_last_use);
-			if (n->loop != nullptr) {
-				for (const GDScriptParser::Node* s : n->loop->statements) {
-					_visit(s, r_last_use);
-				}
-			}
-		} break;
-		case GDScriptParser::Node::MATCH: {
-			const auto* n = static_cast<const GDScriptParser::MatchNode*>(p_node);
-			_visit(n->test, r_last_use);
-			for (const GDScriptParser::MatchBranchNode* branch : n->branches) {
-				if (branch->block != nullptr) {
-					for (const GDScriptParser::Node* s : branch->block->statements) {
-						_visit(s, r_last_use);
-					}
-				}
-				if (branch->guard_body != nullptr) {
-					for (const GDScriptParser::Node* s : branch->guard_body->statements) {
-						_visit(s, r_last_use);
-					}
-				}
-				for (const GDScriptParser::PatternNode* pat : branch->patterns) {
-					_visit_pattern(pat, r_last_use);
-				}
-			}
-		} break;
-		default:
-			///everything else either can't reference, or is irrelevant here, probs
-			break;
+	if (!p_eligible_for_reuse) {
+		return decision;
 	}
+
+	List<FreedSlot>::Element* E = r_pool.free_slots.front();
+	while (E != nullptr) {
+		List<FreedSlot>::Element* next = E->next();
+		bool below_floor = (p_stack_floor != UINT32_MAX) && (E->get().address < p_stack_floor);
+		bool above_ceiling = (p_locals_ceiling != UINT32_MAX) && (E->get().address >= p_locals_ceiling);
+		bool wrong_generation = (E->get().inline_generation != r_pool.inline_generation);
+		if (below_floor || above_ceiling || wrong_generation) {
+			r_pool.free_slots.erase(E);
+		}
+		E = next;
+	}
+
+	List<FreedSlot>::Element* best = nullptr;
+	for (List<FreedSlot>::Element* F = r_pool.free_slots.front(); F != nullptr; F = F->next()) {
+		if (F->get().freed_at_ip >= p_current_ip) {
+			continue; ///still live
+		}
+		if (best == nullptr || F->get().address < best->get().address) {
+			best = F;
+		}
+	}
+
+	if (best == nullptr) {
+		return decision;
+	}
+
+	decision.reused = true;
+	decision.existing_stack_pos = best->get().address;
+	r_pool.free_slots.erase(best);
+	return decision;
 }
 
-///recurse fully so nested reads can actually give a shit about last use tracking
-void GDScriptOptimiser::_visit_pattern(const GDScriptParser::PatternNode* p_pattern, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use) {
-	if (p_pattern == nullptr) {
-		return;
-	}
+void GDScriptOptimiser::register_freed_slot(SiblingSlotPool& r_pool, const StringName& p_name, uint32_t p_address, int p_freed_at_ip) {
+	FreedSlot slot;
+	slot.owner_name = p_name;
+	slot.address = p_address;
+	slot.freed_at_ip = p_freed_at_ip;
+	slot.inline_generation = r_pool.inline_generation;
+	r_pool.free_slots.push_back(slot);
+}
 
-	switch (p_pattern->pattern_type) {
-		case GDScriptParser::PatternNode::PT_EXPRESSION: {
-			_visit(p_pattern->expression, r_last_use);
-		} break;
-		case GDScriptParser::PatternNode::PT_ARRAY: {
-			for (const GDScriptParser::PatternNode* sub : p_pattern->array) {
-				_visit_pattern(sub, r_last_use);
-			}
-		} break;
-		case GDScriptParser::PatternNode::PT_DICTIONARY: {
-			for (const GDScriptParser::PatternNode::Pair& pair : p_pattern->dictionary) {
-				_visit(pair.key, r_last_use);
-				if (pair.value_pattern != nullptr) {
-					_visit_pattern(pair.value_pattern, r_last_use);
-				}
-			}
-		} break;
-		case GDScriptParser::PatternNode::PT_BIND: {
-			if (p_pattern->bind != nullptr) {
-				VarLifetime& lt = r_last_use[p_pattern->bind];
-				if (p_pattern->bind->start_line > lt.last_write) {
-					lt.last_write = p_pattern->bind->start_line;
-				}
-			}
-		} break;
-		case GDScriptParser::PatternNode::PT_LITERAL:
-		case GDScriptParser::PatternNode::PT_REST:
-		case GDScriptParser::PatternNode::PT_WILDCARD:
-			break;
-	}
+uint64_t GDScriptOptimiser::new_inline_generation() {
+	return ++_generation_counter;
 }

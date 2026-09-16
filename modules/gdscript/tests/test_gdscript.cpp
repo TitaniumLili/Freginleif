@@ -39,6 +39,8 @@
 #include "gdscript_test_runner.h"
 
 #include "core/config/project_settings.h"
+#include "servers/audio/audio_driver_dummy.h"
+#include "servers/audio/audio_server.h"
 #include "core/io/file_access.h"
 #include "core/os/os.h"
 #include "core/string/string_builder.h"
@@ -329,6 +331,21 @@ void test(TestType p_type) {
 
 	// Initialize the language for the test routine.
 	init_language(fa->get_path_absolute().get_base_dir());
+
+	if (!AudioServer::get_singleton()) {
+		AudioDriverManager::add_driver(memnew(AudioDriverDummy));
+		AudioServer* audio_server = memnew(AudioServer);
+		audio_server->init();
+	}
+
+	Ref<ConfigFile> class_cache;
+	class_cache.instantiate();
+	Error class_cache_err = class_cache->load("res://.godot/global_script_class_cache.cfg");
+	if (class_cache_err == OK) {
+		Array class_list = class_cache->get_value("", "list", Array());
+		print_line(vformat("class cache loaded OK! %d classes", class_list.size()));
+		ProjectSettings::get_singleton()->set_setting("_global_script_classes", class_list);
+	}
 
 	// Load global classes.
 	TypedArray<Dictionary> script_classes = ProjectSettings::get_singleton()->get_global_class_list();

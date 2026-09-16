@@ -57,7 +57,14 @@ static Ref<GDScriptTraitSignatureSnapshot> _make_trait_method_signature_snapshot
 GDScriptTraitAnalyzer::GDScriptTraitAnalyzer(GDScriptParser* p_parser, GDScriptAnalyzer* p_analyzer) {
 	parser = p_parser;
 	analyzer = p_analyzer;
-	///wipe old claims before this pass adds fresh ones
+}
+
+void GDScriptTraitAnalyzer::_wipe_stale_claims_once() {
+	if (wiped_stale_claims_for_this_pass) {
+		return;
+	}
+	wiped_stale_claims_for_this_pass = true;
+	///wipe old claims from a previous pass before this pass adds fresh ones,
 	///otherwise reanalysis just piles up duplicates forever :<
 	GDScriptCache::remove_global_impls_by_path(parser->get_script_path());
 }
@@ -161,6 +168,8 @@ Error GDScriptTraitAnalyzer::resolve_trait(GDScriptParser::TraitNode* p_trait) {
 
 Error GDScriptTraitAnalyzer::resolve_impl(GDScriptParser::ImplNode* p_impl) {
 	ERR_FAIL_NULL_V(p_impl, ERR_INVALID_PARAMETER);
+
+	_wipe_stale_claims_once();
 
 	StringName trait_name;
 

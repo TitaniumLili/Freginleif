@@ -117,6 +117,13 @@ private:
 	HashMap<String, HashSet<String>> dependencies;
 	HashMap<String, HashSet<String>> parser_inverse_dependencies;
 
+	HashMap<StringName, HashSet<StringName>> direct_subclasses_by_fqcn;
+	HashMap<StringName, String> fqcn_owning_path;
+	HashMap<StringName, HashSet<String>> inline_assumption_dependents;
+
+	SafeFlag subclass_graph_project_scanned;
+	bool subclass_graph_project_scanning = false;
+
 	///trait stuff
 	HashMap<StringName, String> global_traits;
 	bool global_traits_project_scanned = false;
@@ -180,6 +187,14 @@ public:
 	static void ensure_global_impls_scanned();
 
 	static void clear();
+
+	static void register_subclass_edge(const StringName& p_base_fqcn, const String& p_base_path, const StringName& p_subclass_fqcn, const String& p_subclass_path);
+	static String get_owning_path_for_fqcn(const StringName& p_fqcn);
+	static bool is_fqcn_reachable_subclass(const StringName& p_ancestor_fqcn, const StringName& p_fqcn);
+	static Vector<StringName> get_all_reachable_subclasses(const StringName& p_base_fqcn);
+	static void register_inline_assumption(const StringName& p_assumed_base_fqcn, const String& p_dependent_path);
+	static Vector<String> get_paths_invalidated_by_new_subclass(const StringName& p_base_fqcn);
+	static void ensure_subclass_graph_project_scanned();
 
 	GDScriptCache();
 	~GDScriptCache();

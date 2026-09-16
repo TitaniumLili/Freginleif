@@ -33,10 +33,12 @@
 #include "gdscript.h"
 #include "gdscript_codegen.h"
 #include "gdscript_function.h"
+#include "gdscript_optimiser.h"
 #include "gdscript_parser.h"
 
 #include "core/object/gdtype.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/local_vector.h"
 
 class GDScriptCompiler {
 	const GDScriptParser *parser = nullptr;
@@ -85,6 +87,9 @@ class GDScriptCompiler {
 		///tells Node::SELF codegen to redirect to the @impl_self parameter instead of Address::SELF,
 		///since there's no GDScriptInstance* at all for these (p_instance is always nullptr :sob:)
 		bool is_native_impl_method = false;
+
+		int inline_call_depth = 0;
+		LocalVector<const GDScriptParser::FunctionNode*> inline_call_stack;
 
 		GDScriptCodeGenerator::Address add_local(const StringName &p_name, const GDScriptDataType &p_type) {
 			uint32_t addr = generator->add_local(p_name, p_type);
@@ -143,6 +148,18 @@ class GDScriptCompiler {
 			locals_stack.pop_back();
 			generator->end_block();
 		}
+
+		List<HashMap<StringName, GDScriptCodeGenerator::Address>> parameters_stack;
+
+		void push_inline_parameters() {
+			parameters_stack.push_back(parameters);
+			parameters.clear();
+		}
+
+		void pop_inline_parameters() {
+			parameters = parameters_stack.back()->get();
+			parameters_stack.pop_back();
+		}
 	};
 
 	bool _is_class_member_property(CodeGen &codegen, const StringName &p_name);
@@ -154,16 +171,29 @@ class GDScriptCompiler {
 	void _write_set_named_smart(GDScriptCodeGenerator* gen, const GDScriptCodeGenerator::Address& p_base, const StringName& p_name, const GDScriptCodeGenerator::Address& p_source);
 	bool _is_local_or_parameter(CodeGen &codegen, const StringName &p_name);
 
+	int inline_budget_used = 0;
+
+	///the next two values can be cranked by YOU! (yes, you!) to tune inlining!
+	static constexpr int INLINE_BUDGET_MAX = 4000; ///how aggressively to inline functions within functions
+	static constexpr int INLINE_MAX_DEPTH = 8;     ///inline max depth for nested inlining-within-inlining
+
+
+	const GDScriptParser::FunctionNode* _get_inline_candidate(CodeGen& codegen, GDScript* p_owner_script, const StringName& p_function_name, bool p_is_static_call);
+	bool _no_reachable_subclass_overrides(const StringName& p_base_fqcn, const StringName& p_method_name);
+	int _count_ast_nodes(const GDScriptParser::Node* p_node);
+	Error _emit_inline_call(CodeGen& codegen, const GDScriptParser::FunctionNode* p_target, const Vector<GDScriptCodeGenerator::Address>& p_arguments, const GDScriptCodeGenerator::Address& p_result, int p_call_site_line, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool = nullptr);
+
 	void _set_error(const String &p_error, const GDScriptParser::Node *p_node);
 
 	GDScriptDataType _gdtype_from_datatype(const GDScriptParser::DataType &p_datatype, GDScript *p_owner, bool p_handle_metatype = true);
 
 	GDScriptCodeGenerator::Address _parse_expression(CodeGen &codegen, Error &r_error, const GDScriptParser::ExpressionNode *p_expression, bool p_root = false, bool p_initializer = false);
 	GDScriptCodeGenerator::Address _parse_match_pattern(CodeGen &codegen, Error &r_error, const GDScriptParser::PatternNode *p_pattern, const GDScriptCodeGenerator::Address &p_value_addr, const GDScriptCodeGenerator::Address &p_type_addr, const GDScriptCodeGenerator::Address &p_previous_test, bool p_is_first, bool p_is_nested);
-	List<GDScriptCodeGenerator::Address> _add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block);
-	void _clear_block_locals(CodeGen &codegen, const List<GDScriptCodeGenerator::Address> &p_locals);
-	Error _parse_block(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, bool p_add_locals = true, bool p_clear_locals = true);
-	GDScriptFunction *_parse_function(Error &r_error, GDScript *p_script, const GDScriptParser::ClassNode *p_class, const GDScriptParser::FunctionNode *p_func, bool p_for_ready = false, bool p_for_lambda = false, bool p_func_is_native_impl_method = false);
+	List<GDScriptCodeGenerator::Address> _add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool = nullptr);
+	void _clear_block_locals(CodeGen &codegen, const List<GDScriptCodeGenerator::Address> &p_locals, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool = nullptr);
+	Error _parse_block(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, bool p_add_locals = true, bool p_clear_locals = true, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool = nullptr);
+	Error _parse_if_chain(CodeGen &codegen, const GDScriptParser::IfNode *p_if, GDScriptOptimiser::SiblingSlotPool* p_pool);
+	GDScriptFunction *_parse_function(Error &r_error, GDScript *p_script, const GDScriptParser::ClassNode *p_class, const GDScriptParser::FunctionNode *p_func, bool p_for_ready = false, bool p_for_lambda = false, bool p_func_is_native_impl_method = false, const LocalVector<const GDScriptParser::FunctionNode*>* p_enclosing_inline_stack = nullptr, int p_enclosing_inline_budget_used = 0);
 	GDScriptFunction *_make_static_initializer(Error &r_error, GDScript *p_script, const GDScriptParser::ClassNode *p_class);
 	Error _parse_setter_getter(GDScript *p_script, const GDScriptParser::ClassNode *p_class, const GDScriptParser::VariableNode *p_variable, bool p_is_setter);
 	Error _prepare_compilation(GDScript *p_script, const GDScriptParser::ClassNode *p_class, bool p_keep_state);

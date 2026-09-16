@@ -61,6 +61,9 @@ class GDScriptTraitAnalyzer {
 	/// every impl block resolved in this file, in declaration order.
 	List<Ref<GDScriptImpl>> resolved_impls;
 
+	bool wiped_stale_claims_for_this_pass = false;
+	void _wipe_stale_claims_once();
+
 private:
     void push_error(const String& p_message, const GDScriptParser::Node* p_source = nullptr);
 

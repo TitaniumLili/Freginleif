@@ -39,6 +39,7 @@
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
+#include "core/config/project_settings.h"
 #include "core/templates/rb_set.h"
 #include "core/templates/vector.h"
 
@@ -270,9 +271,89 @@ void GDScriptCache::remove_script(const String &p_path) {
 
 	remove_global_trait_by_path(p_path);
 	remove_global_impls_by_path(p_path);
+
+	Vector<StringName> owned_fqcns;
+	for (const KeyValue<StringName, String>& E : singleton->fqcn_owning_path) {
+		if (E.value == p_path) {
+			owned_fqcns.push_back(E.key);
+		}
+	}
+	for (const StringName& fqcn : owned_fqcns) {
+		singleton->fqcn_owning_path.erase(fqcn);
+		singleton->direct_subclasses_by_fqcn.erase(fqcn);
+		singleton->inline_assumption_dependents.erase(fqcn);
+		for (KeyValue<StringName, HashSet<StringName>> &S : singleton->direct_subclasses_by_fqcn) {
+			S.value.erase(fqcn);
+		}
+	}
+	///this path might've been a dependent somewhere, so nuke it off
+	for (KeyValue<StringName, HashSet<String>>& D : singleton->inline_assumption_dependents) {
+		D.value.erase(p_path);
+	}
 }
 
-///gdscript trait stuff
+///hmm, i hear you ask... "why do you need to scan the entire fucking project?"
+///ah well... remember the whole inlining optimisation we were supposed to be doing?
+///well, imagine the case you inline something that depended on another script, yeah?
+///unfortunately for us, gdscript doesn't exactly guarantee that when you grab a script, its
+///deps are resolved...
+///so the best we're stuck for absolute fucking correctness is scanning the entire project once
+///and making sure every script is at least at INHERITANCE_SOLVED so we can start safely performing
+///inlining ops. this infra right here builds a subclass graph to ensure that.
+///hmm, might this explode compile times? ehhh, don't think so, at least from my testing.
+
+static void _collect_gd_paths_in_dir(const String& p_dir, Vector<String>& r_paths) {
+	Error err = OK;
+	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
+	if (err != OK || dir.is_null()) {
+		return;
+	}
+
+	if (dir->file_exists(".gdignore")) {
+		return;
+	}
+
+	dir->list_dir_begin();
+	String file_name = dir->get_next();
+	while (!file_name.is_empty()) {
+		if (dir->current_is_dir()) {
+			if (file_name != "." && file_name != ".." && file_name != "./") {
+				_collect_gd_paths_in_dir(p_dir.path_join(file_name), r_paths);
+			}
+		} else if (file_name.ends_with(".gd")) {
+			r_paths.push_back(p_dir.path_join(file_name));
+		}
+		file_name = dir->get_next();
+	}
+	dir->list_dir_end();
+}
+
+void GDScriptCache::ensure_subclass_graph_project_scanned() {
+	if (singleton->subclass_graph_project_scanned.is_set()) {
+		return;
+	}
+
+	{
+		MutexLock lock(singleton->mutex);
+		if (singleton->subclass_graph_project_scanned.is_set() || singleton->subclass_graph_project_scanning) {
+			return;
+		}
+		singleton->subclass_graph_project_scanning = true;
+	}
+
+	Vector<String> gd_paths;
+	_collect_gd_paths_in_dir("res://", gd_paths);
+
+	for (const String &path : gd_paths) {
+		Error err = OK;
+		Ref<GDScriptParserRef> parser_ref = GDScriptCache::get_parser(path, GDScriptParserRef::INHERITANCE_SOLVED, err);
+		(void)parser_ref; ///failures here are pre-existing project errors, i can't be assed about these
+	}
+
+	MutexLock lock(singleton->mutex);
+	singleton->subclass_graph_project_scanned.set();
+	singleton->subclass_graph_project_scanning = false;
+}
 
 static void _scan_trait_scripts_in_dir(const String& p_dir) {
 	Error err = OK;
@@ -466,7 +547,7 @@ void GDScriptCache::ensure_global_impls_scanned() {
 
 	for (const String& path : trait_paths) {
 		Error err = OK;
-		Ref<GDScript> script = get_full_script(path, err);
+		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
 	}
 
 	MutexLock lock(singleton->mutex);
@@ -764,6 +845,185 @@ void GDScriptCache::remove_static_script(const String &p_fqcn) {
 	singleton->static_gdscript_cache.erase(p_fqcn);
 }
 
+///inline safety subclass graph stuff
+
+void GDScriptCache::register_subclass_edge(const StringName& p_base_fqcn, const String& p_base_path, const StringName& p_subclass_fqcn, const String& p_subclass_path) {
+	if (singleton == nullptr || p_base_fqcn == StringName() || p_subclass_fqcn == StringName()) {
+		return;
+	}
+
+	///HEADS UP!! the incredibly convenient command `--test gdscript-compiler <path>` 
+	///skips normal path resolution entirely, so a file compiled that way can some-fucking-how 
+	///end up with two distinct graph entries for what's really one class (one res://-spelled, one not) 
+	///it doesn't happen in the editor/normal game compiles...?
+	///i don't know why, but for that reason alone i can't be assed to fix that issue
+	String base_path = ProjectSettings::get_singleton()->localize_path(p_base_path);
+	String subclass_path = ProjectSettings::get_singleton()->localize_path(p_subclass_path);
+
+	MutexLock lock(singleton->mutex);
+
+	if (singleton->cleared) {
+		return;
+	}
+
+	singleton->direct_subclasses_by_fqcn[p_base_fqcn].insert(p_subclass_fqcn);
+
+	if (!singleton->fqcn_owning_path.has(p_base_fqcn)) {
+		singleton->fqcn_owning_path[p_base_fqcn] = base_path;
+	}
+	if (!singleton->fqcn_owning_path.has(p_subclass_fqcn)) {
+		singleton->fqcn_owning_path[p_subclass_fqcn] = subclass_path;
+	}
+}
+
+String GDScriptCache::get_owning_path_for_fqcn(const StringName& p_fqcn) {
+	if (singleton == nullptr) {
+		return String();
+	}
+
+	MutexLock lock(singleton->mutex);
+
+	const HashMap<StringName, String>::ConstIterator found = singleton->fqcn_owning_path.find(p_fqcn);
+	if (!found) {
+		return String();
+	}
+	return found->value;
+}
+
+bool GDScriptCache::is_fqcn_reachable_subclass(const StringName& p_ancestor_fqcn, const StringName& p_fqcn) {
+	if (singleton == nullptr) {
+		return false;
+	}
+
+	MutexLock lock(singleton->mutex);
+
+	if (p_ancestor_fqcn == p_fqcn) {
+		return true;
+	}
+
+	///inheritance cycles SHOULD get rejected before base_type is ever committed
+	///so this shouldn't need the visited guard, but better safe than sorry i suppose
+	HashSet<StringName> visited;
+	List<StringName> frontier;
+	frontier.push_back(p_ancestor_fqcn);
+	visited.insert(p_ancestor_fqcn);
+
+	while (!frontier.is_empty()) {
+		StringName current = frontier.front()->get();
+		frontier.pop_front();
+
+		const HashMap<StringName, HashSet<StringName>>::Iterator found = singleton->direct_subclasses_by_fqcn.find(current);
+		if (!found) {
+			continue;
+		}
+		for (const StringName& child : found->value) {
+			if (child == p_fqcn) {
+				return true;
+			}
+			if (!visited.has(child)) {
+				visited.insert(child);
+				frontier.push_back(child);
+			}
+		}
+	}
+
+	return false;
+}
+
+Vector<StringName> GDScriptCache::get_all_reachable_subclasses(const StringName& p_base_fqcn) {
+	Vector<StringName> result;
+	if (singleton == nullptr) {
+		return result;
+	}
+
+	MutexLock lock(singleton->mutex);
+	HashSet<StringName> visited;
+	List<StringName> frontier;
+	frontier.push_back(p_base_fqcn);
+	visited.insert(p_base_fqcn);
+
+	while (!frontier.is_empty()) {
+		StringName current = frontier.front()->get();
+		frontier.pop_front();
+
+		const HashMap<StringName, HashSet<StringName>>::Iterator found = singleton->direct_subclasses_by_fqcn.find(current);
+		if (!found) {
+			continue;
+		}
+		for (const StringName& child : found->value) {
+			if (!visited.has(child)) {
+				visited.insert(child);
+				frontier.push_back(child);
+				result.push_back(child);
+			}
+		}
+	}
+
+	return result;
+}
+
+void GDScriptCache::register_inline_assumption(const StringName& p_assumed_base_fqcn, const String& p_dependent_path) {
+	if (singleton == nullptr || p_assumed_base_fqcn == StringName() || p_dependent_path.is_empty()) {
+		return;
+	}
+
+	MutexLock lock(singleton->mutex);
+
+	if (singleton->cleared) {
+		return;
+	}
+
+	singleton->inline_assumption_dependents[p_assumed_base_fqcn].insert(p_dependent_path);
+}
+
+Vector<String> GDScriptCache::get_paths_invalidated_by_new_subclass(const StringName& p_base_fqcn) {
+	Vector<String> result;
+	if (singleton == nullptr) {
+		return result;
+	}
+
+	MutexLock lock(singleton->mutex);
+
+	if (singleton->cleared) {
+		return result;
+	}
+
+	///heads up!!! this is O(classes), but i think it's fine, because it should only really trigger
+	///on loads/reloads
+	HashSet<StringName> ancestors_and_self;
+	ancestors_and_self.insert(p_base_fqcn);
+	{
+		List<StringName> frontier;
+		frontier.push_back(p_base_fqcn);
+		while (!frontier.is_empty()) {
+			StringName current = frontier.front()->get();
+			frontier.pop_front();
+			for (const KeyValue<StringName, HashSet<StringName>>& E : singleton->direct_subclasses_by_fqcn) {
+				if (E.value.has(current) && !ancestors_and_self.has(E.key)) {
+					ancestors_and_self.insert(E.key);
+					frontier.push_back(E.key);
+				}
+			}
+		}
+	}
+
+	HashSet<String> seen_paths;
+	for (const StringName& fqcn : ancestors_and_self) {
+		const HashMap<StringName, HashSet<String>>::Iterator found = singleton->inline_assumption_dependents.find(fqcn);
+		if (!found) {
+			continue;
+		}
+		for (const String& dependent_path : found->value) {
+			if (!seen_paths.has(dependent_path)) {
+				seen_paths.insert(dependent_path);
+				result.push_back(dependent_path);
+			}
+		}
+	}
+
+	return result;
+}
+
 void GDScriptCache::clear() {
 	if (singleton == nullptr) {
 		return;
@@ -811,6 +1071,11 @@ void GDScriptCache::clear() {
 	singleton->global_impls.clear();
 	singleton->global_impls_project_scanned.clear();
 	singleton->global_impls_project_scanning = false;
+	singleton->direct_subclasses_by_fqcn.clear();
+	singleton->fqcn_owning_path.clear();
+	singleton->inline_assumption_dependents.clear();
+	singleton->subclass_graph_project_scanned.clear();
+	singleton->subclass_graph_project_scanning = false;
 }
 
 GDScriptCache::GDScriptCache() {

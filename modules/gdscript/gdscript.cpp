@@ -2673,6 +2673,44 @@ void GDScriptLanguage::reload_scripts(const Array &p_scripts) {
 		//if instance states were saved, set them!
 	}
 
+	///second pass, after the reload above
+	Vector<String> newly_invalidated;
+	for (const KeyValue<Ref<GDScript>, HashMap<ObjectID, List<Pair<StringName, Variant>>>>& E : to_reload) {
+		Ref<GDScript> scr = E.key;
+		if (scr.is_null() || !scr->is_script_valid()) {
+			continue;
+		}
+		StringName fqcn = StringName(scr->get_fully_qualified_name());
+		if (fqcn == StringName()) {
+			continue;
+		}
+		Vector<String> invalidated = GDScriptCache::get_paths_invalidated_by_new_subclass(fqcn);
+		for (const String& path : invalidated) {
+			newly_invalidated.push_back(path);
+		}
+	}
+
+	if (!newly_invalidated.is_empty()) {
+		HashSet<String> already_reloading_paths;
+		for (const KeyValue<Ref<GDScript>, HashMap<ObjectID, List<Pair<StringName, Variant>>>>& E : to_reload) {
+			if (E.key.is_valid()) {
+				already_reloading_paths.insert(E.key->get_path());
+			}
+		}
+
+		for (const String& path : newly_invalidated) {
+			if (already_reloading_paths.has(path)) {
+				continue; ///already getting reloaded this batch
+			}
+			Ref<GDScript> dependent = GDScriptCache::get_cached_script(path);
+			if (dependent.is_null()) {
+				continue; ///not loaded, so it'll check itself whenever it does manage to load
+			}
+			dependent->load_source_code(path);
+			dependent->reload(true);
+		}
+	}
+
 #endif // DEBUG_ENABLED
 }
 

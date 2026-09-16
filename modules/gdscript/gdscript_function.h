@@ -333,10 +333,11 @@ public:
 		OPCODE_RESERVED_12,
 		OPCODE_RESERVED_13,
 		OPCODE_RESERVED_14,
-		///where all the reginleif bs starts from
 		OPCODE_ASSIGN_TYPED_ARRAY_NESTED,
 		OPCODE_ASSIGN_TYPED_DICTIONARY_NESTED,
 		OPCODE_RETURN_TYPED_DICTIONARY_NESTED,
+		OPCODE_CHECK_TYPED_ARRAY_ARG,
+		OPCODE_CHECK_TYPED_DICTIONARY_ARG,
 		OPCODE_END
 	};
 
@@ -372,6 +373,7 @@ private:
 	friend class GDScriptCompiler;
 	friend class GDScriptByteCodeGenerator;
 	friend class GDScriptLanguage;
+	friend class GDScriptOptimiser;
 
 	StringName name;
 	StringName source;
@@ -435,6 +437,23 @@ private:
 	int _methods_count = 0;
 	int _native_impl_call_functions_count = 0;
 	int _lambdas_count = 0;
+
+#ifdef DEBUG_ENABLED
+	///looked at only after a runtime error, so regular inline calls remain (mostly) free
+	struct InlineCall {
+		int start = 0;
+		int end = 0;
+		int argument_end = 0;
+		int call_line = 0;
+		int result_address = ADDR_NIL;
+		int result_temporary = -1;
+		GDScriptDataType return_type;
+		StringName function_name;
+		String source;
+	};
+	Vector<InlineCall> inline_calls;
+	String _get_inline_call_error_function_desc(int p_ip, const Variant* p_self) const;
+#endif
 
 	int *_code_ptr = nullptr;
 	const int *_default_arg_ptr = nullptr;

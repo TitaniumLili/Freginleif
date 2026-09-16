@@ -43,7 +43,7 @@ If you don't want to go through the hassle of all that, I periodically throw a f
 - completely optional braces {} based scoping
 - traits (first pass + optimisation passes)
 - some minor syntax niceties
-- some optimisations
+- some nontrivial optimisations
 
 ## How to use the shit I added
 
@@ -374,10 +374,12 @@ stage
 and things shall simply work.
 
 #### optimisations
-Though not the express goal of Reginleif, performance is always good, so we take what we can get.
+Though not the express goal of Reginleif, performance is always good, so we take what we can get. Reginleif is faster than vanilla Godot, outperforming vanilla GDScript by 300-450% on pathological benchmarks and 30~% in a real game. These benchmarks can be ran for yourself in the /bench directory.
+
 most people aren't really interested in the technical side of perf, so I'll keep this brief:
-- local variables in function calls now reuse previously used, and now assuredly free stack slots instead of naively allocating new ones
+- local variables in function calls now reuse previously used, and now assuredly free stack slots instead of naively allocating new ones. This can be turned off in the project settings.
 - compiler discarded away property access type info... the runtime had no idea what it was accessing and thus had to query classDB on every set/get. this info is now baked into the compile-time whenever sufficient type info is available, skipping a bunch of runtime bullshit. property set/get is now a lot faster!
+- small-ish functions on the same script/inheritance tree that are safe to inline are now inlined aggressively. This is a significant boost to speed, as it completely skips call overhead from several different layers of abstractions. Probably the single biggest boost to raw execution speed in this fork. This can be turned off in the project settings.
 
 
 ### Some more caveats
@@ -412,5 +414,6 @@ i don't wanna. i prioritise usability now. i'm not saying GDType and shit are ba
 - polanas, for lending me compute for compilation, and helping benchmark bottlenecks
 - Hannah (jmejuniper) for the awesome custom-built icon for this fork!
 - regulars in InboundShovel discord's godot channel for being awesome
+- regulars in the Godot discord's #gdscript-discuss channel for bouncing around ideas
 - godot upstream for getting me into gamedev in the first place
 - you!

@@ -553,6 +553,8 @@ void (*type_init_function_table[])(Variant *) = {
 		&&OPCODE_ASSIGN_TYPED_ARRAY_NESTED, \
 		&&OPCODE_ASSIGN_TYPED_DICTIONARY_NESTED, \
 		&&OPCODE_RETURN_TYPED_DICTIONARY_NESTED, \
+		&&OPCODE_CHECK_TYPED_ARRAY_ARG, \
+		&&OPCODE_CHECK_TYPED_DICTIONARY_ARG, \
 		&&OPCODE_END \
 	}; \
 	static_assert(std_size(switch_table_ops) == (OPCODE_END + 1), "Opcodes in jump table aren't the same as opcodes in enum.");
@@ -637,6 +639,27 @@ void (*type_init_function_table[])(Variant *) = {
 
 #define METHOD_CALL_ON_NULL_VALUE_ERROR(method_pointer) "Cannot call method '" + (method_pointer)->get_name() + "' on a null value."
 #define METHOD_CALL_ON_FREED_INSTANCE_ERROR(method_pointer) "Cannot call method '" + (method_pointer)->get_name() + "' on a previously freed instance."
+
+#ifdef DEBUG_ENABLED
+String GDScriptFunction::_get_inline_call_error_function_desc(int p_ip, const Variant* p_self) const {
+	const InlineCall* active_inline_call = nullptr;
+	for (const InlineCall& call : inline_calls) {
+		if (call.start <= p_ip && p_ip < call.end && (!active_inline_call || call.start >= active_inline_call->start)) {
+			active_inline_call = &call;
+		}
+	}
+
+	if (active_inline_call == nullptr) {
+		return name;
+	}
+
+	String basestr = _get_var_type(p_self);
+	if (basestr.is_empty()) {
+		return active_inline_call->function_name;
+	}
+	return vformat("%s' in base '%s", String(active_inline_call->function_name), basestr);
+}
+#endif
 
 Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_args, int p_argcount, Callable::CallError &r_err, CallState *p_state) {
 	GodotProfileZoneScript(this, source, name, name, _initial_line);
@@ -908,6 +931,8 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 	OPCODE_WHILE(true) {
 #endif
 
+	///it's fucking C++, what other choice does a man have?
+	restart_opcode:
 		OPCODE_SWITCH(_code_ptr[ip]) {
 			OPCODE(OPCODE_OPERATOR) {
 				constexpr int _pointer_size = sizeof(Variant::ValidatedOperatorEvaluator) / sizeof(*_code_ptr);
@@ -3620,7 +3645,112 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 				OPCODE_BREAK;
 			}
 
-			OPCODE(OPCODE_RETURN_TYPED_NATIVE) {
+		OPCODE(OPCODE_CHECK_TYPED_ARRAY_ARG) {
+			CHECK_SPACE(6);
+			GET_VARIANT_PTR(src, 0);
+			GET_VARIANT_PTR(script_type, 1);
+			GET_VARIANT_PTR(dst, 2);
+			Variant::Type builtin_type = (Variant::Type)_code_ptr[ip + 4];
+			int native_type_idx = _code_ptr[ip + 5];
+			GD_ERR_BREAK(native_type_idx < 0 || native_type_idx >= _global_names_count);
+			const StringName& native_type = _global_names_ptr[native_type_idx];
+
+			bool converted_packed_array = false;
+			if (src->get_type() != Variant::ARRAY) {
+				switch (src->get_type()) {
+					case Variant::PACKED_BYTE_ARRAY:
+					case Variant::PACKED_INT32_ARRAY:
+					case Variant::PACKED_INT64_ARRAY:
+					case Variant::PACKED_FLOAT32_ARRAY:
+					case Variant::PACKED_FLOAT64_ARRAY:
+					case Variant::PACKED_STRING_ARRAY:
+					case Variant::PACKED_VECTOR2_ARRAY:
+					case Variant::PACKED_VECTOR3_ARRAY:
+					case Variant::PACKED_COLOR_ARRAY:
+					case Variant::PACKED_VECTOR4_ARRAY: {
+						Array converted = *src;
+						*dst = Array(converted, builtin_type, native_type, *script_type);
+						converted_packed_array = true;
+					} break;
+					default:
+						break;
+				}
+
+				if (converted_packed_array) {
+					ip += 6;
+				} else {
+#ifdef DEBUG_ENABLED
+					err_text = vformat(R"(Invalid type in function '%s'. Cannot convert argument 1 from %s to Array.)",
+							_get_inline_call_error_function_desc(ip, &stack[ADDR_STACK_SELF]), Variant::get_type_name(src->get_type()));
+#endif
+					OPCODE_BREAK;
+				}
+			} else {
+				Array *array = VariantInternal::get_array(src);
+				bool types_match = array->get_typed_builtin() == ((uint32_t)builtin_type) &&
+						array->get_typed_class_name() == native_type &&
+						array->get_typed_script() == *script_type;
+
+				if (!types_match) {
+#ifdef DEBUG_ENABLED
+					err_text = vformat(R"(Invalid type in function '%s'. The array of argument 1 (%s) does not have the same element type as the expected typed array argument.)",
+							_get_inline_call_error_function_desc(ip, &stack[ADDR_STACK_SELF]), _get_var_type(src));
+#endif
+					OPCODE_BREAK;
+				}
+
+				*dst = *src;
+				ip += 6;
+			}
+		}
+		DISPATCH_OPCODE;
+
+		OPCODE(OPCODE_CHECK_TYPED_DICTIONARY_ARG) {
+			CHECK_SPACE(9);
+			GET_VARIANT_PTR(src, 0);
+			GET_VARIANT_PTR(key_script_type, 1);
+			GET_VARIANT_PTR(value_script_type, 2);
+			GET_VARIANT_PTR(dst, 3);
+			Variant::Type key_builtin_type = (Variant::Type)_code_ptr[ip + 5];
+			int key_native_type_idx = _code_ptr[ip + 6];
+			GD_ERR_BREAK(key_native_type_idx < 0 || key_native_type_idx >= _global_names_count);
+			const StringName& key_native_type = _global_names_ptr[key_native_type_idx];
+			Variant::Type value_builtin_type = (Variant::Type)_code_ptr[ip + 7];
+			int value_native_type_idx = _code_ptr[ip + 8];
+			GD_ERR_BREAK(value_native_type_idx < 0 || value_native_type_idx >= _global_names_count);
+			const StringName& value_native_type = _global_names_ptr[value_native_type_idx];
+
+			if (src->get_type() != Variant::DICTIONARY) {
+#ifdef DEBUG_ENABLED
+				err_text = vformat(R"(Invalid type in function '%s'. Cannot convert argument 1 from %s to Dictionary.)",
+						_get_inline_call_error_function_desc(ip, &stack[ADDR_STACK_SELF]), Variant::get_type_name(src->get_type()));
+#endif
+				OPCODE_BREAK;
+			}
+
+			///THINK: is this even a good idea?
+			Dictionary* dict = VariantInternal::get_dictionary(src);
+			bool types_match = dict->get_typed_key_builtin() == ((uint32_t)key_builtin_type) &&
+					dict->get_typed_key_class_name() == key_native_type &&
+					dict->get_typed_key_script() == *key_script_type &&
+					dict->get_typed_value_builtin() == ((uint32_t)value_builtin_type) &&
+					dict->get_typed_value_class_name() == value_native_type &&
+					dict->get_typed_value_script() == *value_script_type;
+
+			if (!types_match) {
+#ifdef DEBUG_ENABLED
+				err_text = vformat(R"(Invalid type in function '%s'. The dictionary of argument 1 (%s) does not have the same element type as the expected typed dictionary argument.)",
+						_get_inline_call_error_function_desc(ip, &stack[ADDR_STACK_SELF]), _get_var_type(src));
+#endif
+				OPCODE_BREAK;
+			}
+
+			*dst = *src;
+			ip += 9;
+		}
+		DISPATCH_OPCODE;
+
+		OPCODE(OPCODE_RETURN_TYPED_NATIVE) {
 				CHECK_SPACE(3);
 				GET_VARIANT_PTR(r, 0);
 
@@ -4689,6 +4819,36 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 			err_func = _script->local_name.string() + "." + err_func;
 		}
 		int err_line = line;
+
+		const InlineCall* active_inline_call = nullptr;
+		for (const InlineCall& call : inline_calls) {
+			if (call.start <= ip && ip < call.end && (!active_inline_call || call.start >= active_inline_call->start)) {
+				active_inline_call = &call;
+			}
+		}
+
+		const InlineCall* recovery_inline_call = active_inline_call;
+		bool recover_inline_call = active_inline_call != nullptr;
+		InlineCall inline_call;
+		if (active_inline_call != nullptr) {
+			if (ip < active_inline_call->argument_end) {
+				recovery_inline_call = nullptr;
+				for (const InlineCall& call : inline_calls) {
+					if (call.start < active_inline_call->start && call.start <= ip && ip < call.end && (!recovery_inline_call || call.start >= recovery_inline_call->start)) {
+						recovery_inline_call = &call;
+					}
+				}
+				err_line = active_inline_call->call_line;
+				recover_inline_call = recovery_inline_call != nullptr;
+			}
+
+			///keep the recovery frame alive
+			if (recovery_inline_call != nullptr) {
+				inline_call = *recovery_inline_call;
+				err_file = inline_call.source;
+				err_func = inline_call.function_name;
+			}
+		}
 		if (err_text.is_empty()) {
 			int debug_ip_start = MAX(0, ip - 12);
 			int debug_ip_end = MIN(_code_size - 1, ip + 12);
@@ -4704,6 +4864,19 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 
 		_err_print_error(err_func.utf8().get_data(), err_file.utf8().get_data(), err_line, err_text.utf8().get_data(), false, ERR_HANDLER_SCRIPT);
 		GDScriptLanguage::get_singleton()->debug_break(err_text, false);
+
+		if (recover_inline_call) {
+			const int address_type = (inline_call.result_address & ADDR_TYPE_MASK) >> ADDR_BITS;
+			const int address_index = inline_call.result_address & ADDR_MASK;
+			if (inline_call.result_address != ADDR_NIL) {
+				variant_addresses[address_type][address_index] = _get_default_variant_for_data_type(inline_call.return_type);
+			}
+			ip = inline_call.end;
+			line = inline_call.call_line;
+			err_text = String();
+			last_opcode = _code_ptr[ip];
+			goto restart_opcode;
+		}
 
 		// Get a default return type in case of failure
 		retvalue = _get_default_variant_for_data_type(return_type);

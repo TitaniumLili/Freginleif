@@ -34,6 +34,7 @@
 #include "gdscript_analyzer.h"
 #include "gdscript_byte_codegen.h"
 #include "gdscript_cache.h"
+#include "core/config/project_settings.h"
 #include "gdscript_optimiser.h"
 #include "gdscript_trait_analyzer.h"
 #include "gdscript_utility_functions.h"
@@ -780,7 +781,17 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 								gen->write_call(result, self, call->function_name, arguments);
 							}
 						} else {
-							if (is_awaited) {
+							///self.balls()
+							const GDScriptParser::FunctionNode* inline_target = nullptr;
+							if (!is_awaited) {
+								inline_target = _get_inline_candidate(codegen, codegen.script, call->function_name, call->is_static || codegen.is_static);
+							}
+							if (inline_target != nullptr) {
+								r_error = _emit_inline_call(codegen, inline_target, arguments, result, call->start_line);
+								if (r_error) {
+									return GDScriptCodeGenerator::Address();
+								}
+							} else if (is_awaited) {
 								gen->write_call_self_async(result, call->function_name, arguments);
 							} else {
 								gen->write_call_self(result, call->function_name, arguments);
@@ -1614,7 +1625,7 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_expression(CodeGen &code
 				}
 			}
 
-			GDScriptFunction *function = _parse_function(r_error, codegen.script, codegen.class_node, lambda->function, false, true);
+			GDScriptFunction* function = _parse_function(r_error, codegen.script, codegen.class_node, lambda->function, false, true, false, &codegen.inline_call_stack, inline_budget_used);
 			if (r_error) {
 				return GDScriptCodeGenerator::Address();
 			}
@@ -2071,53 +2082,30 @@ GDScriptCodeGenerator::Address GDScriptCompiler::_parse_match_pattern(CodeGen &c
 	return p_previous_test;
 }
 
-List<GDScriptCodeGenerator::Address> GDScriptCompiler::_add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block) {
+List<GDScriptCodeGenerator::Address> GDScriptCompiler::_add_block_locals(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool) {
 	List<GDScriptCodeGenerator::Address> addresses;
-	HashMap<const GDScriptParser::Node*, GDScriptOptimiser::VarLifetime> lifetimes = GDScriptOptimiser::compute_lifetimes(p_block);
 
-	struct FreedSlot {
-		StringName owner_name;
-		GDScriptCodeGenerator::Address address;
-		int freed_at_line;
-	};
-	List<FreedSlot> free_slots;
-
+	///NOTE:!!! this doesn't yet try to reuse stack slots between sibling branches!
+	///that's a separate problem for future me
 	for (const GDScriptParser::SuiteNode::Local &local : p_block->locals) {
 		if (local.type == GDScriptParser::SuiteNode::Local::PARAMETER || local.type == GDScriptParser::SuiteNode::Local::FOR_VARIABLE) {
 			// Parameters are added directly from function and loop variables are declared explicitly.
 			continue;
 		}
 
-		bool eligible_for_reuse = local.type == GDScriptParser::SuiteNode::Local::VARIABLE ||
-				local.type == GDScriptParser::SuiteNode::Local::PATTERN_BIND;
-
-		const GDScriptParser::Node* lifetime_key = nullptr;
-		if (local.type == GDScriptParser::SuiteNode::Local::VARIABLE) {
-			lifetime_key = local.variable;
-		} else if (local.type == GDScriptParser::SuiteNode::Local::PATTERN_BIND) {
-			lifetime_key = local.bind;
-		}
-
 		GDScriptDataType type = _gdtype_from_datatype(local.get_datatype(), codegen.script);
-
 		GDScriptCodeGenerator::Address addr;
 		bool reused = false;
 
-		if (eligible_for_reuse) {
-			List<FreedSlot>::Element* best = nullptr;
-			for (List<FreedSlot>::Element* E = free_slots.front(); E; E = E->next()) {
-				if (E->get().freed_at_line < local.start_line) {
-					if (best == nullptr || E->get().freed_at_line > best->get().freed_at_line) {
-						best = E;
-					}
-				}
-			}
-			if (best != nullptr) {
-				GDScriptByteCodeGenerator* bytecode_gen = static_cast<GDScriptByteCodeGenerator*>(codegen.generator);
-				uint32_t pos = bytecode_gen->reuse_local_slot(local.name, type, best->get().address.address);
+		if (p_sibling_pool != nullptr) {
+			int current_ip = codegen.generator->get_current_ip();
+			GDScriptByteCodeGenerator* bytecode_gen = static_cast<GDScriptByteCodeGenerator*>(codegen.generator);
+			uint32_t locals_ceiling = bytecode_gen->get_locals_top();
+			GDScriptOptimiser::SlotDecision decision = GDScriptOptimiser::try_reuse_slot(*p_sibling_pool, current_ip, /*eligible=*/true, /*floor=*/UINT32_MAX, locals_ceiling);
+			if (decision.reused) {
+				uint32_t pos = bytecode_gen->reuse_local_slot(local.name, type, decision.existing_stack_pos);
 				addr = GDScriptCodeGenerator::Address(GDScriptCodeGenerator::Address::LOCAL_VARIABLE, pos, type);
 				codegen.locals[local.name] = addr;
-				free_slots.erase(best);
 				reused = true;
 			}
 		}
@@ -2127,30 +2115,322 @@ List<GDScriptCodeGenerator::Address> GDScriptCompiler::_add_block_locals(CodeGen
 		}
 
 		addresses.push_back(addr);
-
-		if (eligible_for_reuse && lifetime_key != nullptr) {
-			const GDScriptOptimiser::VarLifetime* lt = lifetimes.getptr(lifetime_key);
-			if (lt != nullptr) {
-				int freed_at = MAX(lt->last_read, lt->last_write);
-				if (freed_at >= 0) {
-					free_slots.push_back({ local.name, addr, freed_at });
-				}
-			}
-		}
 	}
 	return addresses;
 }
 
 // Avoid keeping in the stack long-lived references to objects, which may prevent `RefCounted` objects from being freed.
-void GDScriptCompiler::_clear_block_locals(CodeGen &codegen, const List<GDScriptCodeGenerator::Address> &p_locals) {
+void GDScriptCompiler::_clear_block_locals(CodeGen &codegen, const List<GDScriptCodeGenerator::Address> &p_locals, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool) {
+	int freed_at_ip = (p_sibling_pool != nullptr) ? codegen.generator->get_current_ip() : -1;
 	for (const GDScriptCodeGenerator::Address &local : p_locals) {
 		if (local.type.can_contain_object()) {
 			codegen.generator->clear_address(local);
 		}
+		if (p_sibling_pool != nullptr) {
+			GDScriptOptimiser::register_freed_slot(*p_sibling_pool, StringName(), local.address, freed_at_ip);
+		}
 	}
 }
 
-Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, bool p_add_locals, bool p_clear_locals) {
+Error GDScriptCompiler::_parse_if_chain(CodeGen &codegen, const GDScriptParser::IfNode *p_if, GDScriptOptimiser::SiblingSlotPool* p_pool) {
+	Error err = OK;
+	GDScriptCodeGenerator* gen = codegen.generator;
+
+	GDScriptCodeGenerator::Address condition = _parse_expression(codegen, err, p_if->condition);
+	if (err) {
+		return err;
+	}
+
+	gen->write_if(condition);
+
+	if (condition.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+		codegen.generator->pop_temporary();
+	}
+
+	err = _parse_block(codegen, p_if->true_block, true, true, p_pool);
+	if (err) {
+		return err;
+	}
+
+	if (p_if->false_block) {
+		gen->write_else();
+
+		bool is_elif = p_if->false_block->statements.size() == 1 &&
+				p_if->false_block->statements[0]->type == GDScriptParser::Node::IF;
+
+		if (is_elif) {
+			gen->clear_temporaries();
+			codegen.start_block();
+			List<GDScriptCodeGenerator::Address> wrapper_locals = _add_block_locals(codegen, p_if->false_block, p_pool);
+
+			const GDScriptParser::IfNode* elif = static_cast<const GDScriptParser::IfNode*>(p_if->false_block->statements[0]);
+			gen->write_newline(elif->start_line);
+			err = _parse_if_chain(codegen, elif, p_pool);
+			if (err) {
+				return err;
+			}
+
+			_clear_block_locals(codegen, wrapper_locals, p_pool);
+			codegen.end_block();
+		} else {
+			err = _parse_block(codegen, p_if->false_block, true, true, p_pool);
+			if (err) {
+				return err;
+			}
+		}
+	}
+
+	gen->write_endif();
+	return OK;
+}
+
+///only a budget estimate, doesn't exact out bytecode sizes or anything.
+///intentionally biased towards undercounting btw
+int GDScriptCompiler::_count_ast_nodes(const GDScriptParser::Node* p_node) {
+	if (p_node == nullptr) {
+		return 0;
+	}
+	int count = 1;
+	switch (p_node->type) {
+		case GDScriptParser::Node::SUITE: {
+			const GDScriptParser::SuiteNode* suite = static_cast<const GDScriptParser::SuiteNode*>(p_node);
+			for (const GDScriptParser::Node* s : suite->statements) {
+				count += _count_ast_nodes(s);
+			}
+		} break;
+		case GDScriptParser::Node::IF: {
+			const GDScriptParser::IfNode* if_n = static_cast<const GDScriptParser::IfNode*>(p_node);
+			count += _count_ast_nodes(if_n->true_block);
+			count += _count_ast_nodes(if_n->false_block);
+		} break;
+		case GDScriptParser::Node::FOR: {
+			const GDScriptParser::ForNode* for_n = static_cast<const GDScriptParser::ForNode*>(p_node);
+			count += _count_ast_nodes(for_n->loop);
+		} break;
+		case GDScriptParser::Node::WHILE: {
+			const GDScriptParser::WhileNode* while_n = static_cast<const GDScriptParser::WhileNode*>(p_node);
+			count += _count_ast_nodes(while_n->loop);
+		} break;
+		case GDScriptParser::Node::MATCH: {
+			const GDScriptParser::MatchNode* match_n = static_cast<const GDScriptParser::MatchNode*>(p_node);
+			for (const GDScriptParser::MatchBranchNode* branch : match_n->branches) {
+				count += _count_ast_nodes(branch->block);
+				count += _count_ast_nodes(branch->guard_body);
+			}
+		} break;
+		default:
+			break;
+	}
+	return count;
+}
+
+bool GDScriptCompiler::_no_reachable_subclass_overrides(const StringName& p_base_fqcn, const StringName& p_method_name) {
+	GDScriptCache::ensure_subclass_graph_project_scanned();
+
+	Vector<StringName> subclass_fqcns = GDScriptCache::get_all_reachable_subclasses(p_base_fqcn);
+	if (subclass_fqcns.is_empty()) {
+		return true; ///nothing subclasses this
+	}
+
+	for (const StringName &sub_fqcn : subclass_fqcns) {
+		String sub_path = GDScriptCache::get_owning_path_for_fqcn(sub_fqcn);
+		if (sub_path.is_empty()) {
+			return false; ///shouldn't happen, fuck me if it does ig
+		}
+
+		Error err = OK;
+		Ref<GDScriptParserRef> parser_ref = GDScriptCache::get_parser(sub_path, GDScriptParserRef::INTERFACE_SOLVED, err);
+		if (err != OK || parser_ref.is_null() || parser_ref->get_parser() == nullptr) {
+			return false;
+		}
+		GDScriptParser::ClassNode* sub_class = parser_ref->get_parser()->find_class(String(sub_fqcn));
+		if (sub_class == nullptr) {
+			return false;
+		}
+		if (sub_class->members_indices.has(p_method_name)) {
+			uint32_t idx = sub_class->members_indices[p_method_name];
+			if (idx < sub_class->members.size() && sub_class->members[idx].type == GDScriptParser::ClassNode::Member::FUNCTION) {
+				return false; ///overridden, oops, gtfo
+			}
+		}
+	}
+
+	return true;
+}
+
+///chokepoint for the entire inline feature! everything inline related sets off here
+const GDScriptParser::FunctionNode* GDScriptCompiler::_get_inline_candidate(CodeGen& codegen, GDScript* p_owner_script, const StringName& p_function_name, bool p_is_static_call) {
+	static bool inlining_enabled_cached = false;
+	static bool inlining_enabled_resolved = false;
+	if (!inlining_enabled_resolved) {
+		inlining_enabled_cached = GLOBAL_DEF("reginleif/optimisations/enable_inlining", true);
+		inlining_enabled_resolved = true;
+	}
+	if (!inlining_enabled_cached) {
+		return nullptr;
+	}
+
+	if (p_owner_script == nullptr) {
+		return nullptr;
+	}
+
+	const GDScriptParser::ClassNode* class_node = codegen.class_node;
+	if (class_node == nullptr) {
+		return nullptr;
+	}
+	GDScriptParser::ClassNode::Member const* member_ptr = nullptr;
+	const GDScriptParser::ClassNode* defining_class = class_node;
+	while (defining_class != nullptr) {
+		if (defining_class->members_indices.has(p_function_name)) {
+			uint32_t idx = defining_class->members_indices[p_function_name];
+			if (idx < defining_class->members.size()) {
+				const GDScriptParser::ClassNode::Member* candidate_member = &defining_class->members[idx];
+				if (candidate_member->type == GDScriptParser::ClassNode::Member::FUNCTION) {
+					member_ptr = candidate_member;
+				}
+				break; ///found SOMETHING, don't look further
+			}
+		}
+		if (defining_class->base_type.kind == GDScriptParser::DataType::CLASS) {
+			defining_class = defining_class->base_type.class_type;
+		} else {
+			defining_class = nullptr;
+		}
+	}
+	if (member_ptr == nullptr || member_ptr->type != GDScriptParser::ClassNode::Member::FUNCTION) {
+		return nullptr;
+	}
+
+	const GDScriptParser::FunctionNode* candidate = member_ptr->function;
+	if (candidate == nullptr) {
+		return nullptr;
+	}
+	if (p_is_static_call != candidate->is_static) {
+		return nullptr;
+	}
+	if (candidate->is_coroutine || candidate->is_vararg()) {
+		return nullptr;
+	}
+	for (const GDScriptParser::ParameterNode* parameter : candidate->parameters) {
+		if (parameter->type_constraint.is_variant()) {
+			return nullptr;
+		}
+	}
+
+	if (!_no_reachable_subclass_overrides(defining_class->fqcn, p_function_name)) {
+		return nullptr;
+	}
+	if (codegen.script != nullptr) {
+		GDScriptCache::register_inline_assumption(defining_class->fqcn, codegen.script->get_path());
+	}
+
+	for (uint32_t i = 0; i < codegen.inline_call_stack.size(); i++) {
+		if (codegen.inline_call_stack[i] == candidate) {
+			return nullptr;
+		}
+	}
+
+	if (codegen.inline_call_stack.size() >= INLINE_MAX_DEPTH) {
+		return nullptr;
+	}
+
+	int candidate_size = _count_ast_nodes(candidate->body);
+	if (inline_budget_used + candidate_size > INLINE_BUDGET_MAX) {
+		return nullptr;
+	}
+
+	return candidate;
+}
+
+Error GDScriptCompiler::_emit_inline_call(CodeGen& codegen, const GDScriptParser::FunctionNode* p_target, const Vector<GDScriptCodeGenerator::Address>& p_arguments, const GDScriptCodeGenerator::Address& p_result, int p_call_site_line, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool) {
+	Error err = OK;
+	GDScriptCodeGenerator* gen = codegen.generator;
+
+	inline_budget_used += _count_ast_nodes(p_target->body);
+
+	DEV_ASSERT(p_target->identifier != nullptr);
+	const GDScriptDataType callee_return_type = _gdtype_from_datatype(p_target->return_type_constraint, codegen.script);
+	gen->start_inline_call(p_result);
+#ifdef DEBUG_ENABLED
+	gen->begin_inline_call_debug(p_result, callee_return_type, p_target->identifier->name, codegen.script->get_script_path(), p_call_site_line);
+#endif
+	codegen.start_block();
+
+	///NOTE:!!! SSR doesn't run post inlining for now!!!
+	///it would go CRAZY if it did, but i tried last time and had a really weird bug
+	///where some phantom temporary would get popped off before it was assigned to(???)
+	///so i'm skipping that step for now.
+	///just something to consider for later!
+	GDScriptOptimiser::SiblingSlotPool inline_pool;
+	inline_pool.inline_generation = GDScriptOptimiser::new_inline_generation();
+	(void)p_sibling_pool;
+
+	const GDScriptParser::FunctionNode* saved_function_node = codegen.function_node;
+	codegen.function_node = p_target;
+
+	codegen.inline_call_stack.push_back(p_target);
+	codegen.inline_call_depth++;
+	codegen.push_inline_parameters();
+
+	for (uint32_t i = 0; i < p_target->parameters.size() && i < (uint32_t)p_arguments.size(); i++) {
+		const GDScriptParser::ParameterNode* param = p_target->parameters[i];
+		GDScriptDataType param_type = _gdtype_from_datatype(param->type_constraint, codegen.script);
+		GDScriptCodeGenerator::Address local = codegen.add_local(param->identifier->name, param_type);
+		if (param_type.kind == GDScriptDataType::BUILTIN && param_type.builtin_type == Variant::ARRAY && param_type.has_container_element_type(0)) {
+			gen->write_check_typed_array_arg(local, p_arguments[i], param_type.get_container_element_type(0));
+		} else if (param_type.kind == GDScriptDataType::BUILTIN && param_type.builtin_type == Variant::DICTIONARY && param_type.has_container_element_types()) {
+			gen->write_check_typed_dictionary_arg(local, p_arguments[i], param_type.get_container_element_type_or_variant(0), param_type.get_container_element_type_or_variant(1));
+		} else {
+			gen->write_assign_with_conversion(local, p_arguments[i]);
+		}
+	}
+
+#ifdef DEBUG_ENABLED
+	gen->end_inline_call_arguments_debug();
+#endif
+
+	for (uint32_t i = (uint32_t)p_arguments.size(); i < p_target->parameters.size(); i++) {
+		const GDScriptParser::ParameterNode* param = p_target->parameters[i];
+		GDScriptDataType param_type = _gdtype_from_datatype(param->type_constraint, codegen.script);
+		GDScriptCodeGenerator::Address local = codegen.add_local(param->identifier->name, param_type);
+		gen->write_newline(param->initializer->start_line);
+		GDScriptCodeGenerator::Address default_value = _parse_expression(codegen, err, param->initializer);
+		if (err) {
+			codegen.function_node = saved_function_node;
+			codegen.inline_call_depth--;
+			codegen.inline_call_stack.resize(codegen.inline_call_stack.size() - 1);
+			codegen.pop_inline_parameters();
+			return err;
+		}
+		gen->write_assign_with_conversion(local, default_value);
+		if (default_value.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
+			gen->pop_temporary();
+		}
+	}
+
+	///splice gaming 2026
+	err = _parse_block(codegen, p_target->body, /*add_locals=*/true, /*clear_locals=*/true, &inline_pool);
+
+	codegen.function_node = saved_function_node;
+	codegen.inline_call_depth--;
+	codegen.inline_call_stack.resize(codegen.inline_call_stack.size() - 1);
+	codegen.pop_inline_parameters();
+
+	if (err) {
+		return err;
+	}
+
+	codegen.end_block();
+	gen->end_inline_call();
+#ifdef DEBUG_ENABLED
+	gen->end_inline_call_debug();
+#endif
+	gen->write_newline(p_call_site_line);
+
+	return OK;
+}
+
+Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::SuiteNode *p_block, bool p_add_locals, bool p_clear_locals, GDScriptOptimiser::SiblingSlotPool* p_sibling_pool) {
 	Error err = OK;
 	GDScriptCodeGenerator *gen = codegen.generator;
 	List<GDScriptCodeGenerator::Address> block_locals;
@@ -2159,7 +2439,7 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 	codegen.start_block();
 
 	if (p_add_locals) {
-		block_locals = _add_block_locals(codegen, p_block);
+		block_locals = _add_block_locals(codegen, p_block, p_sibling_pool);
 	}
 
 	for (const GDScriptParser::Node *s : p_block->statements) {
@@ -2268,32 +2548,14 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 			} break;
 			case GDScriptParser::Node::IF: {
 				const GDScriptParser::IfNode *if_n = static_cast<const GDScriptParser::IfNode *>(s);
-				GDScriptCodeGenerator::Address condition = _parse_expression(codegen, err, if_n->condition);
+
+				GDScriptOptimiser::SiblingSlotPool if_pool;
+				if_pool.inline_generation = GDScriptOptimiser::new_inline_generation();
+
+				err = _parse_if_chain(codegen, if_n, &if_pool);
 				if (err) {
 					return err;
 				}
-
-				gen->write_if(condition);
-
-				if (condition.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
-					codegen.generator->pop_temporary();
-				}
-
-				err = _parse_block(codegen, if_n->true_block);
-				if (err) {
-					return err;
-				}
-
-				if (if_n->false_block) {
-					gen->write_else();
-
-					err = _parse_block(codegen, if_n->false_block);
-					if (err) {
-						return err;
-					}
-				}
-
-				gen->write_endif();
 			} break;
 			case GDScriptParser::Node::FOR: {
 				const GDScriptParser::ForNode *for_n = static_cast<const GDScriptParser::ForNode *>(s);
@@ -2425,15 +2687,28 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 				GDScriptCodeGenerator::Address return_value;
 
 				if (return_n->return_value != nullptr) {
-					return_value = _parse_expression(codegen, err, return_n->return_value);
+					bool is_void_function = false;
+					if (codegen.function_node != nullptr) {
+						const GDScriptDataType function_return_type = _gdtype_from_datatype(codegen.function_node->return_type_constraint, codegen.script);
+						is_void_function = function_return_type.kind == GDScriptDataType::BUILTIN && function_return_type.builtin_type == Variant::NIL;
+					}
+					bool is_call = return_n->return_value->type == GDScriptParser::Node::CALL;
+					bool return_as_root = is_void_function && is_call;
+
+					return_value = _parse_expression(codegen, err, return_n->return_value, return_as_root);
 					if (err) {
 						return err;
 					}
 				}
 
+				bool is_inline_return = codegen.inline_call_depth > 0;
+
 				if (return_n->void_return) {
-					// Always return `null`, even if the expression is a call to a `void` function.
-					gen->write_return(codegen.add_constant(Variant()), false);
+					if (is_inline_return) {
+						gen->write_inline_return(codegen.add_constant(Variant()), false);
+					} else {
+						gen->write_return(codegen.add_constant(Variant()), false);
+					}
 
 				///always force typed return for dicts
 				} else {
@@ -2446,7 +2721,11 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 							use_conversion = true;
 						}
 					}
-					gen->write_return(return_value, use_conversion);
+					if (is_inline_return) {
+						gen->write_inline_return(return_value, use_conversion);
+					} else {
+						gen->write_return(return_value, use_conversion);
+					}
 				}
 
 				if (return_value.mode == GDScriptCodeGenerator::Address::TEMPORARY) {
@@ -2552,21 +2831,32 @@ Error GDScriptCompiler::_parse_block(CodeGen &codegen, const GDScriptParser::Sui
 	}
 
 	if (p_add_locals && p_clear_locals) {
-		_clear_block_locals(codegen, block_locals);
+		_clear_block_locals(codegen, block_locals, p_sibling_pool);
 	}
 
 	codegen.end_block();
 	return OK;
 }
 
-GDScriptFunction *GDScriptCompiler::_parse_function(Error &r_error, GDScript *p_script, const GDScriptParser::ClassNode *p_class, const GDScriptParser::FunctionNode *p_func, bool p_for_ready, bool p_for_lambda, bool p_func_is_native_impl_method) {
+GDScriptFunction *GDScriptCompiler::_parse_function(Error &r_error, GDScript *p_script, const GDScriptParser::ClassNode *p_class, const GDScriptParser::FunctionNode *p_func, bool p_for_ready, bool p_for_lambda, bool p_func_is_native_impl_method, const LocalVector<const GDScriptParser::FunctionNode*>* p_enclosing_inline_stack, int p_enclosing_inline_budget_used) {
 	r_error = OK;
 	CodeGen codegen;
 	codegen.generator = memnew(GDScriptByteCodeGenerator);
+	inline_budget_used = p_enclosing_inline_budget_used;
 
 	codegen.class_node = p_class;
 	codegen.script = p_script;
 	codegen.function_node = p_func;
+
+	if (p_enclosing_inline_stack != nullptr) {
+		codegen.inline_call_stack = *p_enclosing_inline_stack;
+	}
+
+	///seed the recursion guard with p_func itself before compiling its body
+	///so you don't inline yourself within yourself lol
+	if (p_func != nullptr) {
+		codegen.inline_call_stack.push_back(p_func);
+	}
 
 	StringName func_name;
 	bool is_abstract = false;

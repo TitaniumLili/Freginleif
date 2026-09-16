@@ -372,6 +372,149 @@ void GDScriptFunction::disassemble(const Vector<String> &p_code_lines) const {
 
 				incr += 3;
 			} break;
+			case OPCODE_SET_MEMBER_VALIDATED: {
+				const MethodBind* setter = _methods_ptr[_code_ptr[ip + 2]];
+				int baked_index = _code_ptr[ip + 3];
+
+				text += "set_member validated [\"";
+				text += setter->get_name();
+				text += "\"";
+				if (baked_index >= 0) {
+					text += ", index ";
+					text += itos(baked_index);
+				}
+				text += "] = ";
+				text += DADDR(1);
+
+				incr += 4;
+			} break;
+			case OPCODE_GET_MEMBER_VALIDATED: {
+				const MethodBind* getter = _methods_ptr[_code_ptr[ip + 2]];
+				int baked_index = _code_ptr[ip + 3];
+
+				text += "get_member validated ";
+				text += DADDR(1);
+				text += " = [\"";
+				text += getter->get_name();
+				text += "\"";
+				if (baked_index >= 0) {
+					text += ", index ";
+					text += itos(baked_index);
+				}
+				text += "]";
+
+				incr += 4;
+			} break;
+			case OPCODE_SET_NAMED_MEMBER_VALIDATED: {
+				const MethodBind* setter = _methods_ptr[_code_ptr[ip + 3]];
+				int baked_index = _code_ptr[ip + 4];
+
+				text += "set_named_member validated ";
+				text += DADDR(1);
+				text += "[\"";
+				text += setter->get_name();
+				text += "\"";
+				if (baked_index >= 0) {
+					text += ", index ";
+					text += itos(baked_index);
+				}
+				text += "] = ";
+				text += DADDR(2);
+
+				incr += 5;
+			} break;
+			case OPCODE_GET_NAMED_MEMBER_VALIDATED: {
+				const MethodBind* getter = _methods_ptr[_code_ptr[ip + 3]];
+				int baked_index = _code_ptr[ip + 4];
+
+				text += "get_named_member validated ";
+				text += DADDR(2);
+				text += " = ";
+				text += DADDR(1);
+				text += "[\"";
+				text += getter->get_name();
+				text += "\"";
+				if (baked_index >= 0) {
+					text += ", index ";
+					text += itos(baked_index);
+				}
+				text += "]";
+
+				incr += 5;
+			} break;
+			case OPCODE_GET_NAMED_ENUM_IMPL_CACHED: {
+				GDScriptFunction* impl_function = _native_impl_call_functions_ptr[_code_ptr[ip + 3]];
+
+				text += "get_named enum-impl cached ";
+				text += DADDR(2);
+				text += " = ";
+				text += DADDR(1);
+				text += " bound to ";
+				text += impl_function != nullptr ? String(impl_function->get_name()) : String("<null>");
+
+				incr += 4;
+			} break;
+			case OPCODE_CHECK_TYPED_ARRAY_ARG: {
+				Ref<Script> script_type = get_constant(_code_ptr[ip + 2] & ADDR_MASK);
+				Variant::Type builtin_type = (Variant::Type)_code_ptr[ip + 4];
+				StringName native_type = get_global_name(_code_ptr[ip + 5]);
+
+				String type_name;
+				if (script_type.is_valid() && script_type->is_script_valid()) {
+					type_name = "script(" + GDScript::debug_get_script_name(script_type) + ")";
+				} else if (native_type != StringName()) {
+					type_name = native_type;
+				} else {
+					type_name = Variant::get_type_name(builtin_type);
+				}
+
+				text += "check typed array arg (Array[";
+				text += type_name;
+				text += "]) ";
+				text += DADDR(3);
+				text += " = ";
+				text += DADDR(1);
+
+				incr += 6;
+			} break;
+			case OPCODE_CHECK_TYPED_DICTIONARY_ARG: {
+				Ref<Script> key_script_type = get_constant(_code_ptr[ip + 2] & ADDR_MASK);
+				Variant::Type key_builtin_type = (Variant::Type)_code_ptr[ip + 5];
+				StringName key_native_type = get_global_name(_code_ptr[ip + 6]);
+
+				String key_type_name;
+				if (key_script_type.is_valid() && key_script_type->is_script_valid()) {
+					key_type_name = "script(" + GDScript::debug_get_script_name(key_script_type) + ")";
+				} else if (key_native_type != StringName()) {
+					key_type_name = key_native_type;
+				} else {
+					key_type_name = Variant::get_type_name(key_builtin_type);
+				}
+
+				Ref<Script> value_script_type = get_constant(_code_ptr[ip + 3] & ADDR_MASK);
+				Variant::Type value_builtin_type = (Variant::Type)_code_ptr[ip + 7];
+				StringName value_native_type = get_global_name(_code_ptr[ip + 8]);
+
+				String value_type_name;
+				if (value_script_type.is_valid() && value_script_type->is_script_valid()) {
+					value_type_name = "script(" + GDScript::debug_get_script_name(value_script_type) + ")";
+				} else if (value_native_type != StringName()) {
+					value_type_name = value_native_type;
+				} else {
+					value_type_name = Variant::get_type_name(value_builtin_type);
+				}
+
+				text += "check typed dictionary arg (Dictionary[";
+				text += key_type_name;
+				text += ", ";
+				text += value_type_name;
+				text += "]) ";
+				text += DADDR(4);
+				text += " = ";
+				text += DADDR(1);
+
+				incr += 9;
+			} break;
 			case OPCODE_SET_STATIC_VARIABLE: {
 				Ref<GDScript> gdscript;
 				if (_code_ptr[ip + 2] == ADDR_CLASS) {
@@ -945,7 +1088,7 @@ void GDScriptFunction::disassemble(const Vector<String> &p_code_lines) const {
 					if (i > 0) {
 						text += ", ";
 					}
-					text += DADDR(1 + i);
+					text += DADDR(2 + i);
 				}
 				text += ")";
 

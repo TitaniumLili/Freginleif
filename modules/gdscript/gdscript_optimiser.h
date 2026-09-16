@@ -34,18 +34,44 @@
 #pragma once
 
 #include "gdscript_parser.h"
+#include "core/string/string_name.h"
 #include "core/templates/hash_map.h"
+#include "core/templates/list.h"
 
 class GDScriptOptimiser {
 public:
 	struct VarLifetime {
-		int last_read = -1;
-		int last_write = -1;
+		int last_read_ip = -1;
+		int last_write_ip = -1;
 	};
-	static HashMap<const GDScriptParser::Node*, VarLifetime> compute_lifetimes(const GDScriptParser::SuiteNode* p_block);
+
+	struct FreedSlot {
+		StringName owner_name; ///kept around for debugging
+		uint32_t address = 0;
+		int freed_at_ip = -1;
+		uint64_t inline_generation = 0;
+	};
+
+	///made so that across an if/else/elif branch, you don't waste the max amount of stack slots possible
+	///and instead use a pool that gives you the minimum stack slots needed for the op
+	struct SiblingSlotPool {
+		List<FreedSlot> free_slots;
+		uint64_t inline_generation = 0;
+	};
+
+	struct SlotDecision {
+		bool reused = false;
+		uint32_t existing_stack_pos = 0;
+	};
+
+	static void record_use(HashMap<const GDScriptParser::Node*, VarLifetime>& r_lifetimes, const GDScriptParser::Node* p_key, int p_ip, bool p_is_write);
+
+	/// "can a local thingy use a slot declared at, or freed before, p_current_ip?"
+	static SlotDecision try_reuse_slot(SiblingSlotPool& r_pool, int p_current_ip, bool p_eligible_for_reuse, uint32_t p_stack_floor = UINT32_MAX, uint32_t p_locals_ceiling = UINT32_MAX);
+	static void register_freed_slot(SiblingSlotPool& r_pool, const StringName& p_name, uint32_t p_address, int p_freed_at_ip);
+
+	static uint64_t new_inline_generation();
 
 private:
-	static void _visit(const GDScriptParser::Node* p_node, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use);
-	static void _visit_identifier(const GDScriptParser::IdentifierNode* p_id, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use, bool p_is_write = false);
-	static void _visit_pattern(const GDScriptParser::PatternNode* p_pattern, HashMap<const GDScriptParser::Node*, VarLifetime>& r_last_use);
+	static uint64_t _generation_counter;
 };

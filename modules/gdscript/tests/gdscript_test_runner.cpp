@@ -40,6 +40,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/core_globals.h"
+#include "core/io/config_file.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/io/resource_loader.h"
@@ -48,6 +49,10 @@
 #include "core/os/os.h"
 #include "core/string/string_builder.h"
 #include "scene/resources/packed_scene.h"
+#include "servers/audio/audio_driver_dummy.h"
+#include "servers/audio/audio_server.h"
+#include "servers/physics_3d/physics_server_3d.h"
+#include "servers/physics_3d/physics_server_3d_manager.h"
 #include "tests/test_macros.h"
 
 namespace GDScriptTests {
@@ -119,6 +124,41 @@ void init_language(const String &p_base_path) {
 	if (err) {
 		print_line("Could not load project settings.");
 		// Keep going since some scripts still work without this.
+	}
+
+	Ref<ConfigFile> class_cache;
+	class_cache.instantiate();
+	Error class_cache_err = class_cache->load("res://.godot/global_script_class_cache.cfg");
+	if (class_cache_err == OK) {
+		Array class_list = class_cache->get_value("", "list", Array());
+		print_line(vformat("class cache loaded OK! %d classes", class_list.size()));
+		for (int i = 0; i < class_list.size(); i++) {
+			Dictionary c = class_list[i];
+			if (!c.has("class") || !c.has("language") || !c.has("path") || !c.has("base") || !c.has("is_abstract") || !c.has("is_tool")) {
+				continue;
+			}
+			if (ScriptServer::is_global_class(c["class"])) {
+				continue;
+			}
+			ScriptServer::add_global_class(c["class"], c["base"], c["language"], c["path"], c["is_abstract"], c["is_tool"]);
+		}
+	}
+
+	if (PhysicsServer3D::get_singleton() == nullptr) {
+		PhysicsServer3D* physics_server = PhysicsServer3DManager::get_singleton()->new_default_server();
+		if (physics_server != nullptr) {
+			physics_server->init();
+		} else {
+			print_line("FAILED to create default PhysicsServer3D!!! AAAAAA");
+		}
+	}
+
+	if (AudioServer::get_singleton() == nullptr) {
+		int dummy_driver_index = AudioDriverManager::get_driver_count();
+		AudioDriverManager::add_driver(memnew(AudioDriverDummy));
+		AudioDriverManager::initialize(dummy_driver_index);
+		AudioServer* audio_server = memnew(AudioServer);
+		audio_server->init();
 	}
 
 	// Initialize the language for the test routine.
