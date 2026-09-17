@@ -396,6 +396,3 @@ $RECYCLE.BIN/
 *.msp
 *.lnk
 *.generated.props
-
-/modules/godotsteam/sdk/public
-/modules/godotsteam/sdk/redistributable_bin
