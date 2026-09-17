@@ -301,6 +301,17 @@ Error GDScriptTraitAnalyzer::resolve_impl(GDScriptParser::ImplNode* p_impl) {
 			if (trait->required_signatures.has(E.key)) {
 				gd_impl->provided_signatures[E.key] = trait->required_signatures[E.key];
 			}
+
+			if (E.value != nullptr) {
+				///force this guard open. since the node is shared across every impl of this trait
+				GDScriptParser::DataType previous_impl_self_type = analyzer->current_impl_self_type;
+				analyzer->current_impl_self_type = target_type;
+				analyzer->current_impl_self_type.is_meta_type = false;
+				analyzer->current_impl_self_type.is_constant = false;
+				E.value->resolved_body = false;
+				analyzer->resolve_function_body(E.value);
+				analyzer->current_impl_self_type = previous_impl_self_type;
+			}
 		}
 	}
 

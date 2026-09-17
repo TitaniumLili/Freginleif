@@ -30,11 +30,11 @@ If you don't want to go through the hassle of all that, I periodically throw a f
 **It is not guaranteed that the latest release matches nightly.** Compile yourself for the latest version or request another release if it seems too stale.
 
 ## Shit I want to add
-- type unifier
-- structs
+- strongly typed callables
 - sum types
 - errors as values
 - exhaustive pattern matching
+- structs
 
 ## Shit I added
 - type narrowing

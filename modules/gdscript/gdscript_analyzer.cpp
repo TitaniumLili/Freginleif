@@ -4983,7 +4983,7 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			push_error("Cannot use `super()` inside a lambda.", p_call);
 		}
 	} else if (callee_type == GDScriptParser::Node::IDENTIFIER) {
-		base_type = parser->current_class->self_type;
+		base_type = current_impl_self_type.is_set() ? current_impl_self_type : parser->current_class->self_type;
 		base_type.is_meta_type = false;
 		is_self = true;
 	} else if (callee_type == GDScriptParser::Node::SUBSCRIPT) {
@@ -5539,9 +5539,26 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 		if (!found) {
 			if (trait_analyzer != nullptr && trait_analyzer->find_impl_method_signature(base_type, p_call->function_name).is_valid()) {
 				found = true;
-			} else {
-				if (has_global_impl_method_claim_for_type(base_type, p_call->function_name)) {
-					found = true;
+			} else if (has_global_impl_method_claim_for_type(base_type, p_call->function_name)) {
+				found = true;
+			} else if (is_self && parser->is_trait_script() && trait_analyzer != nullptr) {
+				///no concrete implementer exists yet atp, so check the trait's own methods
+				const GDScriptParser::TraitNode* current_trait = parser->get_trait_tree();
+				if (current_trait != nullptr && current_trait->identifier != nullptr) {
+
+					Ref<GDScriptTrait> self_trait = trait_analyzer->get_local_trait(current_trait->identifier->name);
+					if (self_trait.is_valid() && self_trait->has_method(p_call->function_name)) {
+						found = true;
+						const Ref<GDScriptTraitSignatureSnapshot>* sig = self_trait->required_signatures.getptr(p_call->function_name);
+						if (sig != nullptr && sig->is_valid()) {
+							List<GDScriptParser::DataType> par_types;
+							for (const GDScriptParser::DataType& pt : (*sig)->param_types) {
+								par_types.push_back(pt);
+							}
+							validate_call_arg(par_types, (*sig)->default_arg_count, (*sig)->is_vararg, p_call);
+							call_type = (*sig)->return_type;
+						}
+					}
 				}
 			}
 		}

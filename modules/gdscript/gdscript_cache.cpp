@@ -355,7 +355,7 @@ void GDScriptCache::ensure_subclass_graph_project_scanned() {
 	singleton->subclass_graph_project_scanning = false;
 }
 
-static void _scan_trait_scripts_in_dir(const String& p_dir) {
+static void _scan_trait_scripts_in_dir(const String& p_dir, Vector<String>* r_impl_paths = nullptr) {
 	Error err = OK;
 	Ref<DirAccess> dir = DirAccess::open(p_dir, &err);
 	if (err != OK || dir.is_null()) {
@@ -371,7 +371,7 @@ static void _scan_trait_scripts_in_dir(const String& p_dir) {
 	while (!file_name.is_empty()) {
 		if (dir->current_is_dir()) {
 			if (file_name != "." && file_name != ".." && file_name != "./") {
-				_scan_trait_scripts_in_dir(p_dir.path_join(file_name));
+				_scan_trait_scripts_in_dir(p_dir.path_join(file_name), r_impl_paths);
 			}
 		} else if (file_name.ends_with(".gd")) {
 			String script_path = p_dir.path_join(file_name);
@@ -383,6 +383,11 @@ static void _scan_trait_scripts_in_dir(const String& p_dir) {
 					const GDScriptParser::TraitNode* trait = parser.get_trait_tree();
 					if (trait != nullptr && trait->identifier != nullptr) {
 						GDScriptCache::add_global_trait(trait->identifier->name, script_path);
+					}
+				} else if (err == OK && r_impl_paths != nullptr) {
+					const GDScriptParser::ClassNode* cls = parser.get_tree();
+					if (cls != nullptr && !cls->impls.is_empty()) {
+						r_impl_paths->push_back(script_path);
 					}
 				}
 			} else {
@@ -535,7 +540,8 @@ void GDScriptCache::ensure_global_impls_scanned() {
 		singleton->global_impls_project_scanning = true;
 	}
 
-	_scan_trait_scripts_in_dir("res://");
+	Vector<String> impl_only_paths;
+	_scan_trait_scripts_in_dir("res://", &impl_only_paths);
 
 	Vector<String> trait_paths;
 	{
@@ -546,6 +552,11 @@ void GDScriptCache::ensure_global_impls_scanned() {
 	}
 
 	for (const String& path : trait_paths) {
+		Error err = OK;
+		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
+	}
+
+	for (const String& path : impl_only_paths) {
 		Error err = OK;
 		Ref<GDScript> script = get_full_script(path, err, String(), /*p_update_from_disk=*/true);
 	}

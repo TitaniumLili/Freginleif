@@ -36,21 +36,20 @@
 #include "core/variant/variant.h"
 
 struct ContainerType {
-	Variant::Type builtin_type = Variant::NIL;
+	Variant::Type variant_type = Variant::NIL;
 	StringName class_name;
 	Ref<Script> script;
 };
 
 struct ContainerTypeValidate {
-
-	/// [Monarch] Imagine there's an `Array[Array[int]]`. This `type` field says that the top-level type
+	/// [Monarch] Imagine there's an `Array[Array[int]]`. This `variant_type` field says that the top-level type
 	///           is an `Array`.
-	Variant::Type type = Variant::NIL;
+	Variant::Type variant_type = Variant::NIL;
 	StringName class_name;
 	Ref<Script> script;
 
 	/// [Monarch] Following the previous example, this `nested_type` argument holds types, so from that example,
-	///           this field would be a type validation field that holds an Array in it as its `type`.
+	///           this field would be a type validation field that holds an Array in it as its `variant_type`.
 	///           Recursive typing, in the simplest sense.
 	Vector<ContainerTypeValidate> nested_types;
 
@@ -63,20 +62,20 @@ private:
 	};
 
 	_FORCE_INLINE_ bool _internal_validate(Variant &r_inout_variant, const char *p_operation, bool p_output_errors) const {
-		if (type == Variant::NIL) {
+		if (variant_type == Variant::NIL) {
 			return true;
 		}
 
-		if (type != r_inout_variant.get_type()) {
-			if (r_inout_variant.get_type() == Variant::NIL && type == Variant::OBJECT) {
+		if (variant_type != r_inout_variant.get_type()) {
+			if (r_inout_variant.get_type() == Variant::NIL && variant_type == Variant::OBJECT) {
 				return true;
 			}
 
-			if (Variant::can_convert_strict(r_inout_variant.get_type(), type)) {
+			if (Variant::can_convert_strict(r_inout_variant.get_type(), variant_type)) {
 				Variant converted_to;
 				const Variant *converted_from = &r_inout_variant;
 				Callable::CallError call_error;
-				Variant::construct(type, converted_to, &converted_from, 1, call_error);
+				Variant::construct(variant_type, converted_to, &converted_from, 1, call_error);
 
 				if (call_error.error == Callable::CallError::CALL_OK) {
 					r_inout_variant = converted_to;
@@ -85,13 +84,13 @@ private:
 			}
 
 			if (p_output_errors) {
-				ERR_FAIL_V_MSG(false, vformat("[Reginleif] Tried to %s type '%s' into %s of type '%s'.", String(p_operation), Variant::get_type_name(r_inout_variant.get_type()), where, Variant::get_type_name(type)));
+				ERR_FAIL_V_MSG(false, vformat("[Reginleif] Tried to %s type '%s' into %s of type '%s'.", String(p_operation), Variant::get_type_name(r_inout_variant.get_type()), where, Variant::get_type_name(variant_type)));
 			} else {
 				return false;
 			}
 		}
 
-		if (type != Variant::OBJECT) {
+		if (variant_type != Variant::OBJECT) {
 			return true;
 		}
 
@@ -171,11 +170,11 @@ private:
 			return true;
 		}
 
-		if (type != Variant::ARRAY && type != Variant::DICTIONARY) {
+		if (variant_type != Variant::ARRAY && variant_type != Variant::DICTIONARY) {
 			return true;
 		}
 
-		if (type == Variant::ARRAY) {
+		if (variant_type == Variant::ARRAY) {
 			Array arr = r_inout_variant;
 
 			const ContainerTypeValidate& elem_type = nested_types[0];
@@ -189,7 +188,7 @@ private:
 			r_inout_variant = arr;
 		}
 
-		if (type == Variant::DICTIONARY && nested_types.size() >= 2) { ///maybe an errorr case?
+		if (variant_type == Variant::DICTIONARY && nested_types.size() >= 2) { ///maybe an errorr case?
 			Dictionary dict = r_inout_variant;
 			const ContainerTypeValidate& key_type = nested_types[0];
 			const ContainerTypeValidate& value_type = nested_types[1];
@@ -253,10 +252,10 @@ public:
 			const ContainerTypeValidate &lhs = *current.lhs;
 			const ContainerTypeValidate &rhs = *current.rhs;
 
-			if (lhs.type != rhs.type) {
+			if (lhs.variant_type != rhs.variant_type) {
 				return false;
 			}
-			if (lhs.type != Variant::OBJECT) {
+			if (lhs.variant_type != Variant::OBJECT) {
 				continue;
 			}
 
@@ -300,7 +299,7 @@ public:
 			const ContainerTypeValidate &lhs = *current.lhs;
 			const ContainerTypeValidate &rhs = *current.rhs;
 
-			if (lhs.type != rhs.type || lhs.class_name != rhs.class_name || lhs.script != rhs.script) {
+			if (lhs.variant_type != rhs.variant_type || lhs.class_name != rhs.class_name || lhs.script != rhs.script) {
 				return false;
 			}
 			if (lhs.nested_types.size() != rhs.nested_types.size()) {

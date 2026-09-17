@@ -151,10 +151,10 @@ static String _get_var_type(const Variant *p_var) {
 
 ///no more "Array[Array]" diagnostics, you get the full signature now!
 static String _get_container_validate_type(const ContainerTypeValidate& p_type) {
-	String type_name = _get_element_type(p_type.type, p_type.class_name, p_type.script);
-	if (p_type.type == Variant::ARRAY && p_type.nested_types.size() >= 1) {
+	String type_name = _get_element_type(p_type.variant_type, p_type.class_name, p_type.script);
+	if (p_type.variant_type == Variant::ARRAY && p_type.nested_types.size() >= 1) {
 		type_name += "[" + _get_container_validate_type(p_type.nested_types[0]) + "]";
-	} else if (p_type.type == Variant::DICTIONARY && p_type.nested_types.size() >= 2) {
+	} else if (p_type.variant_type == Variant::DICTIONARY && p_type.nested_types.size() >= 2) {
 		type_name += "[" + _get_container_validate_type(p_type.nested_types[0]) + ", " + _get_container_validate_type(p_type.nested_types[1]) + "]";
 	}
 	return type_name;
@@ -175,7 +175,7 @@ void GDScriptFunction::_profile_native_call(uint64_t p_t_taken, const String &p_
 
 static ContainerTypeValidate _to_container_type_validate(const GDScriptDataType& p_type) {
 	ContainerTypeValidate ct;
-	ct.type = p_type.builtin_type;
+	ct.variant_type = p_type.builtin_type;
 	ct.class_name = p_type.native_type;
 	ct.script = p_type.script_type;
 
@@ -201,7 +201,7 @@ static bool _decode_nested_array_type(const Variant& p_variant, ContainerTypeVal
 	if (!descriptor.has("builtin_type") || !descriptor.has("nested_types")) {
 		return false;
 	}
-	r_type.type = (Variant::Type)(int64_t)descriptor["builtin_type"];
+	r_type.variant_type = (Variant::Type)(int64_t)descriptor["builtin_type"];
 	r_type.class_name = descriptor.get("native_type", StringName());
 	r_type.script = descriptor.get("script_type", Variant());
 	Array nested = descriptor["nested_types"];
@@ -2061,7 +2061,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 					OPCODE_BREAK;
 				}
 				ContainerTypeValidate expected_dict_type;
-				expected_dict_type.type = Variant::DICTIONARY;
+				expected_dict_type.variant_type = Variant::DICTIONARY;
 				expected_dict_type.nested_types.push_back(expected_key_type);
 				expected_dict_type.nested_types.push_back(expected_value_type);
 				Variant src_variant = *src;
@@ -3625,7 +3625,7 @@ Variant GDScriptFunction::call(GDScriptInstance *p_instance, const Variant **p_a
 					OPCODE_BREAK;
 				}
 				ContainerTypeValidate expected_dict_type;
-				expected_dict_type.type = Variant::DICTIONARY;
+				expected_dict_type.variant_type = Variant::DICTIONARY;
 				expected_dict_type.nested_types.push_back(expected_key_type);
 				expected_dict_type.nested_types.push_back(expected_value_type);
 				Variant return_variant = *r;
