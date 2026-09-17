@@ -397,3 +397,5 @@ $RECYCLE.BIN/
 *.lnk
 *.generated.props
 /bench/.godot
+/modules/godotsteam/sdk/public
+/modules/godotsteam/sdk/redistributable_bin
