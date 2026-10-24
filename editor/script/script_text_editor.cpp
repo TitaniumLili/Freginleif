@@ -755,6 +755,13 @@ void ScriptTextEditor::_update_background_color() {
 			int warning_start_column = warning.start_column - 1;
 			int warning_end_line = CLAMP(warning.end_line - 1, 0, te->get_line_count() - 1);
 			int warning_end_column = warning.end_column - 1;
+
+			// If this warning's range extends to a non-existent line, then the
+			// best we can do is have it go to the end of this current line.
+			if (warning.end_line - 1 >= te->get_line_count() - 1) {
+				warning_end_column = te->get_line(warning_end_line).length();
+			}
+
 			int folded_line_header = te->get_folded_line_header(warning_start_line);
 
 			if (warning_underline_color.a != 0.0) {
@@ -782,6 +789,13 @@ void ScriptTextEditor::_update_background_color() {
 			int error_start_column = error.start_column - 1;
 			int error_end_line = CLAMP(error.end_line - 1, 0, te->get_line_count() - 1);
 			int error_end_column = error.end_column - 1;
+
+			// If this error's range extends to a non-existent line, then the
+			// best we can do is have it go to the end of this current line.
+			if (error.end_line - 1 >= te->get_line_count() - 1) {
+				error_end_column = te->get_line(error_end_line).length();
+			}
+
 			int folded_line_header = te->get_folded_line_header(error_start_line);
 
 			if (error_underline_color.a != 0.0) {
@@ -1273,6 +1287,7 @@ void ScriptTextEditor::_lookup_symbol(const String &p_symbol, int p_row, int p_c
 				} break;
 					GODOT_POP_IGNORE_DEPRECATION()
 				case EditorLanguage::LookupResult::Type::SCRIPT_LOCATION:
+				case EditorLanguage::LookupResult::Type::SCRIPT_METHOD:
 				case EditorLanguage::LookupResult::Type::LOCAL_CONSTANT:
 				case EditorLanguage::LookupResult::Type::LOCAL_VARIABLE: {
 					// Nothing to do.
@@ -1457,9 +1472,15 @@ void ScriptTextEditor::_show_symbol_tooltip(const String &p_symbol, int p_row, i
 			case EditorLanguage::LookupResult::Type::CLASS_ANNOTATION: {
 				doc_symbol = "annotation|" + result.class_name + "|" + result.class_member;
 			} break;
+			case EditorLanguage::LookupResult::Type::SCRIPT_METHOD:
 			case EditorLanguage::LookupResult::Type::LOCAL_CONSTANT:
 			case EditorLanguage::LookupResult::Type::LOCAL_VARIABLE: {
-				const String item_type = (result.type == EditorLanguage::LookupResult::Type::LOCAL_CONSTANT) ? "local_constant" : "local_variable";
+				String item_type = "local_variable";
+				if (result.type == EditorLanguage::LookupResult::Type::LOCAL_CONSTANT) {
+					item_type = "local_constant";
+				} else if (result.type == EditorLanguage::LookupResult::Type::SCRIPT_METHOD) {
+					item_type = "local_method";
+				}
 				Dictionary item_data;
 				item_data["description"] = result.description;
 				item_data["is_deprecated"] = result.is_deprecated;
@@ -1470,6 +1491,7 @@ void ScriptTextEditor::_show_symbol_tooltip(const String &p_symbol, int p_row, i
 				item_data["enumeration"] = result.enumeration;
 				item_data["is_bitfield"] = result.is_bitfield;
 				item_data["value"] = result.value;
+				item_data["arguments"] = result.method_arguments;
 				doc_symbol = item_type + "||" + p_symbol + "|" + JSON::stringify(item_data);
 			} break;
 				GODOT_PUSH_IGNORE_DEPRECATION()
