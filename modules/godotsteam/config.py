@@ -13,7 +13,12 @@ def configure(env):
 
 
 def get_doc_classes():
-    return ["Steam", "SteamMultiplayerPeer", "SteamPacketPeer"]
+    return [
+        "Steam",
+        "SteamMultiplayerPeer",
+        "SteamPacketPeer",
+        "SteamProjectSettings"
+        ]
 
 
 def get_doc_path():

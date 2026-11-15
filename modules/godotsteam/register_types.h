@@ -5,7 +5,8 @@
 /*                              GODOTSTEAM                                 */
 /*                         https://godotsteam.com                          */
 /***************************************************************************/
-/* Copyright (c) 2015-Current | GP Garcia and Contributors                 */
+/* Copyright (c) 2015-Current | GP Garcia, Chris Ridenour,                 */
+/*                              and Contributors                           */
 /*                                                                         */
 /* View all contributors at https://godotsteam.com/contribute/contributors */
 /*                                                                         */
@@ -33,6 +34,7 @@
 
 #ifndef GDEXTENSION
 #include "modules/register_module_types.h"
+
 void initialize_godotsteam_module(ModuleInitializationLevel level);
 void uninitialize_godotsteam_module(ModuleInitializationLevel level);
 #endif

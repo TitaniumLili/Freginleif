@@ -5,7 +5,8 @@
 /*                              GODOTSTEAM                                 */
 /*                         https://godotsteam.com                          */
 /***************************************************************************/
-/* Copyright (c) 2015-Current | GP Garcia and Contributors                 */
+/* Copyright (c) 2015-Current | GP Garcia, Chris Ridenour,                 */
+/*                              and Contributors                           */
 /*                                                                         */
 /* View all contributors at https://godotsteam.com/contribute/contributors */
 /*                                                                         */
@@ -31,13 +32,14 @@
 
 #include "steam_packet_peer.h"
 
+
 SteamPacketPeer::SteamPacketPeer() {
 	state = STATE_NONE;
 	steam_id = 0;
 	connection_handle = k_HSteamNetConnection_Invalid;
 	peer_id = 0;
 	last_packet = nullptr;
-	configured_lanes = SteamProjectSettings::get_max_channels();
+	configured_lanes = SteamProjectSettings::get_singleton()->get_max_channels();
 }
 
 SteamPacketPeer::~SteamPacketPeer() {

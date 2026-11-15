@@ -31,7 +31,6 @@ env = SConscript("godot-cpp/SConstruct")
 # Define our options
 opts.Add(PathVariable("target_path", "The path where the plugin is installed.", "bin/", PathVariable.PathAccept))
 opts.Add(PathVariable("target_name", "The plugin name.", "godotsteam", PathVariable.PathAccept))
-opts.Add(BoolVariable("install_plugin", "Install the autoupdater plugin", True))
 opts.Update(env)
 
 # Tells our sources we are building a GDExtension, not a module.
@@ -100,39 +99,12 @@ if env["platform"] == "macos":
     env["SHLIBSUFFIX"] = ".dylib"
 env["SHOBJSUFFIX"] = env["suffix"] + env["SHOBJSUFFIX"]
 
-libdir = {
-    "android-arm64": "androidarm64",
-    "linux-x86_64": "linux64",
-    "linux-x86_32": "linux32",
-    "macos-universal": "osx",
-    "macos-x86_64": "osx",
-    "macos-arm64": "osx",
-    "windows-x86_64": "win64",
-    "windows-x86_32": "win32",
-}.get("{}-{}".format(env["platform"], env["arch"]), "lib")
-extpath = "{}/addons/{}".format(env["target_path"], env["target_name"])
-
 library = env.SharedLibrary(
-    "{}/{}/libgodotsteam{}{}".format(extpath, libdir, env["suffix"], env["SHLIBSUFFIX"]),
+    "bin/libgodotsteam{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
     source=sources,
 )
 
 Default(library)
-
-ext = env.InstallAs(extpath + "/godotsteam.gdextension", "godotsteam.gdextension")
-
-Default(ext)
-
-redist = env.InstallAs(
-    "{}/{}/{}".format(extpath, libdir, steamworks_library), steam_lib_path + "/" + steamworks_library
-)
-
-Default(redist)
-
-if env["install_plugin"]:
-    plugin = env.Install(env.Dir(extpath), env.Glob("plugin/*"))
-    plugin += env.Install(env.Dir(extpath), "plugin/editor")
-    Default(plugin)
 
 # Generates help for the -h scons option.
 Help(opts.GenerateHelpText(env))

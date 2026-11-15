@@ -5,7 +5,8 @@
 /*                              GODOTSTEAM                                 */
 /*                         https://godotsteam.com                          */
 /***************************************************************************/
-/* Copyright (c) 2015-Current | GP Garcia and Contributors                 */
+/* Copyright (c) 2015-Current | GP Garcia, Chris Ridenour,                 */
+/*                              and Contributors                           */
 /*                                                                         */
 /* View all contributors at https://godotsteam.com/contribute/contributors */
 /*                                                                         */
@@ -32,23 +33,61 @@
 #pragma once
 
 #ifdef GDEXTENSION
+#include <godot_cpp/classes/object.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/core/class_db.hpp>
+
 using namespace godot;
 #else
 #include "core/config/project_settings.h"
+#include "core/object/class_db.h"
+#include "core/object/object.h"
 #endif
 
-class SteamProjectSettings {
-public:
-	static void register_settings();
 
-	static int get_app_id();
-	static int get_app_type();
-	static bool get_auto_init();
-	static int get_demo_id();
-	static bool get_embed_callbacks();
-	static int get_id_in_use();
-	static int get_max_channels();
-	static int get_playtest_id();
-	static int get_tool_id();
+class SteamProjectSettings : public Object {
+	GDCLASS(SteamProjectSettings, Object);
+
+
+public:
+	static SteamProjectSettings *get_singleton(){ return singleton; };
+	SteamProjectSettings();
+	~SteamProjectSettings();
+
+	int get_app_id();
+	int get_app_type();
+	bool get_auto_init();
+	int get_demo_id();
+	bool get_embed_callbacks();
+	bool get_enable_debug();
+	int get_id_in_use();
+	int get_max_channels();
+	int get_playtest_id();
+	int get_tool_id();
+	void set_app_id(int new_app_id);
+	void set_app_type(int new_app_type);
+	void set_demo_id(int new_demo_id);
+	void set_enable_debug(bool is_debug_enabled);
+	void set_max_channels(int new_max_channels);
+	void set_playtest_id(int new_playtest_id);
+	void set_tool_id(int new_tool_id);
+
+	void register_settings();
+
+
+	int app_id;
+	int app_type;
+	bool auto_init;
+	int demo_id;
+	bool embed_callbacks;
+	bool enable_debug;
+	int id_in_use;
+	int max_channels;
+	int playtest_id;
+	int tool_id;
+
+
+protected:
+	static void _bind_methods();
+	static SteamProjectSettings *singleton;
 };

@@ -5,7 +5,8 @@
 /*                              GODOTSTEAM                                 */
 /*                         https://godotsteam.com                          */
 /***************************************************************************/
-/* Copyright (c) 2015-Current | GP Garcia and Contributors                 */
+/* Copyright (c) 2015-Current | GP Garcia, Chris Ridenour,                 */
+/*                              and Contributors                           */
 /*                                                                         */
 /* View all contributors at https://godotsteam.com/contribute/contributors */
 /*                                                                         */
@@ -36,12 +37,23 @@
 #pragma warning(disable : 4828)
 #endif
 
+
 // Include GodotSteam header
 #include "godotsteam.h"
 
 // Include some system headers
 #include "fstream"
 #include "vector"
+
+
+extern "C" void __cdecl steam_api_warning_message_hook(int severity, const char *debug_text) {
+	if (severity > 1) {
+		ERR_PRINT_ED(debug_text);
+	} else {
+		WARN_PRINT_ED(debug_text);
+	}
+}
+
 
 Steam *Steam::singleton = nullptr;
 
@@ -206,6 +218,15 @@ Steam::Steam() :
 	were_callbacks_embedded = false;
 }
 
+Steam::~Steam() {
+	if (is_init_success) {
+		is_init_success = false;
+		SteamAPI_Shutdown();
+	}
+	singleton = nullptr;
+}
+
+
 ///// INTERNAL
 
 // Helper function to turn an array of options into an array of SteamNetworkingConfigValue_t structs. These arrays
@@ -279,11 +300,6 @@ Dictionary Steam::gameServerItemToDictionary(gameserveritem_t *server_item) {
 		game_server["steam_id"] = (uint64_t)server_item->m_steamID.ConvertToUint64();
 	}
 	return game_server;
-}
-
-// Get the Steam singleton, obviously
-Steam *Steam::get_singleton() {
-	return singleton;
 }
 
 // Convert a Steam ID to a Steam Identity
@@ -429,44 +445,50 @@ bool Steam::restartAppIfNecessary(uint32_t app_id) {
 	return SteamAPI_RestartAppIfNecessary((AppId_t)app_id);
 }
 
+void Steam::run_embedded_callbacks() {
+	SteamAPI_RunCallbacks();
+}
+
 void Steam::run_callbacks() {
-	SteamAPI_RunCallbacks();
-	if (SteamProjectSettings::get_embed_callbacks() && !SteamProjectSettings::get_auto_init()) {
-		WARN_PRINT_ONCE("Embedded callbacks are enabled, disabling them due to manual call.");
-		if (were_callbacks_embedded) {
-			SceneTree *scene_tree = SceneTree::get_singleton();
-			ERR_FAIL_COND_MSG(scene_tree == nullptr, "SceneTree is not present, cannot disconnect Steam callbacks internally.");
-			scene_tree->disconnect("process_frame", callable_mp(this, &Steam::run_internal_callbacks));
-
-			were_callbacks_embedded = false;
-		}
+	if (were_callbacks_embedded || !is_init_success) {
+		return;
 	}
-}
-
-void Steam::run_internal_callbacks() {
 	SteamAPI_RunCallbacks();
 }
 
-void Steam::run_internal_initialization() {
-	start_initialization_verbose(SteamProjectSettings::get_id_in_use(), false);
+void Steam::set_callbacks_connected(bool embed_callbacks) {
+	if (were_callbacks_embedded) {
+		return;
+	}
+	if (embed_callbacks || SteamProjectSettings::get_singleton()->get_embed_callbacks() && !SteamProjectSettings::get_singleton()->get_auto_init()) {
+		SceneTree *scene_tree = SceneTree::get_singleton();
+		ERR_FAIL_COND_MSG(scene_tree == nullptr, "SceneTree is not present, cannot connect Steam callbacks internally.");
+		scene_tree->connect("process_frame", callable_mp(this, &Steam::run_embedded_callbacks));
+
+		were_callbacks_embedded = true;
+	}
 }
 
-void Steam::set_internal_callbacks(bool embed_callbacks) {
-	if (!SteamProjectSettings::get_auto_init()) {
-		if (embed_callbacks || SteamProjectSettings::get_embed_callbacks()) {
-			SceneTree *scene_tree = SceneTree::get_singleton();
-			ERR_FAIL_COND_MSG(scene_tree == nullptr, "SceneTree is not present, cannot connect Steam callbacks internally.");
-			scene_tree->connect("process_frame", callable_mp(this, &Steam::run_internal_callbacks));
+void Steam::set_callbacks_disconnected() {
+	if (were_callbacks_embedded) {
+		SceneTree *scene_tree = SceneTree::get_singleton();
+		ERR_FAIL_COND_MSG(scene_tree == nullptr, "SceneTree is not present, cannot disconnect Steam callbacks internally.");
+		scene_tree->disconnect("process_frame", callable_mp(this, &Steam::run_embedded_callbacks));
 
-			were_callbacks_embedded = true;
-		}
+		were_callbacks_embedded = false;
 	}
+}
+
+void Steam::static_embed_callbacks() {
+	Steam::get_singleton()->set_callbacks_connected(true);
 }
 
 // Initialize the SDK, without worrying about the cause of failure.
 bool Steam::steamInit(uint32_t app_id, bool embed_callbacks) {
+	ERR_FAIL_COND_V_MSG(is_init_success, true, "Steam is already initialized.");
+
 	if (app_id == 0) {
-		app_id = SteamProjectSettings::get_id_in_use();
+		app_id = SteamProjectSettings::get_singleton()->get_id_in_use();
 	}
 
 	if (app_id != 0) {
@@ -479,8 +501,11 @@ bool Steam::steamInit(uint32_t app_id, bool embed_callbacks) {
 		current_app_id = app_id;
 		current_steam_id = SteamAPI_ISteamUser_GetSteamID(SteamAPI_SteamUser());
 
-		set_internal_callbacks(embed_callbacks);
-
+		if (SteamProjectSettings::get_singleton()->get_enable_debug()) {
+			SteamAPI_ISteamClient_SetWarningMessageHook(SteamClient(), steam_api_warning_message_hook);
+		}
+		
+		set_callbacks_connected(embed_callbacks);
 		return true;
 	}
 	return false;
@@ -489,16 +514,10 @@ bool Steam::steamInit(uint32_t app_id, bool embed_callbacks) {
 // Initialize the Steamworks SDK. On success STEAM_API_INIT_RESULT_OK is returned.
 // Otherwise, if error_message is non-NULL, it will receive a non-localized message that explains the reason for the failure.
 Dictionary Steam::steamInitEx(uint32_t app_id, bool embed_callbacks) {
-	if (SteamProjectSettings::get_auto_init()) {
-		WARN_PRINT_ONCE("Auto-initialization and manual initialization were used. It is recommended you remove one Steam initialization method.");
-	}
-	start_initialization_verbose(app_id, embed_callbacks);
-	return init_result;
-}
+	ERR_FAIL_COND_V_MSG(is_init_success, init_result, "Steam is already initialized.");
 
-void Steam::start_initialization_verbose(uint32_t app_id, bool embed_callbacks) {
 	if (app_id == 0) {
-		app_id = SteamProjectSettings::get_id_in_use();
+		app_id = SteamProjectSettings::get_singleton()->get_id_in_use();
 	}
 
 	if (app_id != 0) {
@@ -516,24 +535,23 @@ void Steam::start_initialization_verbose(uint32_t app_id, bool embed_callbacks) 
 		current_app_id = app_id;
 		current_steam_id = SteamAPI_ISteamUser_GetSteamID(SteamAPI_SteamUser());
 
-		set_internal_callbacks(embed_callbacks);
+		if (SteamProjectSettings::get_singleton()->get_enable_debug()) {
+			SteamAPI_ISteamClient_SetWarningMessageHook(SteamClient(), steam_api_warning_message_hook);
+		}
+
+		set_callbacks_connected(embed_callbacks);
 	}
 	init_result["status"] = initialize_result;
 	init_result["verbal"] = error_message;
+	return init_result;
 }
 
 // Shuts down the Steamworks API, releases pointers and frees memory.
 void Steam::steamShutdown() {
-	// If callbacks were connected internally
-	if (were_callbacks_embedded) {
-		SceneTree *scene_tree = SceneTree::get_singleton();
-		ERR_FAIL_COND_MSG(scene_tree == nullptr, "SceneTree is not present, cannot disconnect Steam callbacks internally.");
-		scene_tree->disconnect("process_frame", callable_mp(this, &Steam::run_internal_callbacks));
-
-		were_callbacks_embedded = false;
-	}
+	set_callbacks_disconnected();
 	SteamAPI_Shutdown();
 }
+
 
 ///// APPS
 
@@ -5607,9 +5625,7 @@ Dictionary Steam::getQueryUGCResult(uint64_t query_handle, uint32_t index) {
 		ugc_result["consumer_app_id"] = (uint32_t)query_details.m_nConsumerAppID;
 		ugc_result["title"] = String::utf8(query_details.m_rgchTitle);
 		// Description is being truncated to 256 characters?
-		char item_description[k_cchPublishedDocumentDescriptionMax]{};
-		snprintf(item_description, k_cchPublishedDocumentDescriptionMax, "%s", query_details.m_rgchDescription);
-		ugc_result["description"] = String::utf8(item_description);
+		ugc_result["description"] = String::utf8(query_details.m_rgchDescription);
 		ugc_result["steam_id_owner"] = (uint64_t)query_details.m_ulSteamIDOwner;
 		ugc_result["time_created"] = query_details.m_rtimeCreated;
 		ugc_result["time_updated"] = query_details.m_rtimeUpdated;
@@ -12213,11 +12229,4 @@ void Steam::_bind_methods() {
 	BIND_ENUM_CONSTANT(XBOX_ORIGIN_DPAD_WEST);
 	BIND_ENUM_CONSTANT(XBOX_ORIGIN_DPAD_EAST);
 	BIND_ENUM_CONSTANT(XBOX_ORIGIN_COUNT);
-}
-
-Steam::~Steam() {
-	if (is_init_success) {
-		SteamAPI_Shutdown();
-	}
-	singleton = nullptr;
 }

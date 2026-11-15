@@ -5,7 +5,8 @@
 /*                              GODOTSTEAM                                 */
 /*                         https://godotsteam.com                          */
 /***************************************************************************/
-/* Copyright (c) 2015-Current | GP Garcia and Contributors                 */
+/* Copyright (c) 2015-Current | GP Garcia, Chris Ridenour,                 */
+/*                              and Contributors                           */
 /*                                                                         */
 /* View all contributors at https://godotsteam.com/contribute/contributors */
 /*                                                                         */
@@ -58,11 +59,17 @@
 #include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
+
 using namespace godot;
 #else
 // Include Godot headers
 #include "core/config/project_settings.h"
+#include "core/version.h"
+#if VERSION_MAJOR == 4 && VERSION_MINOR < 7
+#include "core/object/callable_method_pointer.h"
+#else
 #include "core/object/callable_mp.h"
+#endif
 #include "core/object/class_db.h"
 #include "core/object/object.h"
 #include "core/os/os.h"
@@ -78,6 +85,7 @@ using namespace godot;
 // Include some system headers
 #include <map>
 
+
 class Steam : public Object,
 			  ISteamMatchmakingPingResponse,
 			  ISteamMatchmakingPlayersResponse,
@@ -86,10 +94,13 @@ class Steam : public Object,
 			  ISteamMatchmakingServerListResponse {
 	GDCLASS(Steam, Object);
 
+
 public:
-	static Steam *get_singleton();
+	static Steam *get_singleton() { return singleton; };
 	Steam();
 	~Steam();
+
+	static void static_embed_callbacks();
 
 #include "godotsteam_enums.h"
 
@@ -107,6 +118,7 @@ public:
 	bool isSteamRunning();
 	void releaseCurrentThreadMemory();
 	bool restartAppIfNecessary(uint32_t app_id);
+	void run_callbacks();
 	bool steamInit(uint32_t app_id = 0, bool embed_callbacks = false);
 	Dictionary steamInitEx(uint32_t app_id = 0, bool embed_callbacks = false);
 	void steamShutdown();
@@ -124,12 +136,10 @@ public:
 	uint64_t get_leaderboard_ugc_handle() const { return leaderboard_ugc_handle; }
 	uint64_t get_server_list_request() const { return (uint64)server_list_request; }
 	Dictionary get_steam_init_result() { return init_result; }
-	void run_internal_initialization();
 	void set_browser_handle(uint32_t new_browser_handle) { current_browser_handle = new_browser_handle; }
 	void set_current_app_id(uint32_t new_current_app_id) { current_app_id = new_current_app_id; }
 	void set_current_clan_id(uint64_t new_current_clan_id) { current_clan_id = new_current_clan_id; }
 	void set_current_steam_id(uint64_t new_current_steam_id) { current_steam_id = new_current_steam_id; }
-	void set_internal_callbacks(bool embed_callbacks);
 	void set_inventory_handle(int32 new_inventory_handle) { inventory_handle = new_inventory_handle; }
 	void set_inventory_update_handle(uint64_t new_inventory_update_handle) { inventory_update_handle = new_inventory_update_handle; }
 	void set_leaderboard_details_max(int new_leaderboard_details_max) {
@@ -926,20 +936,18 @@ public:
 	// Utils
 	uint32_t current_app_id = 0;
 
+
 protected:
 	static void _bind_methods();
 	static Steam *singleton;
 
-private:
-	void run_callbacks();
-	void run_internal_callbacks();
-	void start_initialization_verbose(uint32_t app_id = 0, bool embed_callbacks = false);
 
+private:
 	// Main
-	String godotsteam_version = "4.21";
+	String godotsteam_version = "4.24";
 	Dictionary init_result;
 	bool is_init_success;
-	bool were_callbacks_embedded;
+	bool were_callbacks_embedded = false;
 
 	const SteamNetworkingConfigValue_t *convert_config_options(Dictionary config_options);
 	CSteamID createSteamID(uint64_t steam_id, AccountType account_type = AccountType(-1));
@@ -951,6 +959,9 @@ private:
 	SteamNetworkingIPAddr getSteamIPFromString(String ip_string);
 	String getStringFromIP(uint32_t ip_address);
 	String getStringFromSteamIP(SteamNetworkingIPAddr this_address);
+	void run_embedded_callbacks();
+	void set_callbacks_connected(bool embed_callbacks = false);
+	void set_callbacks_disconnected();
 
 	// Matchmaking Servers
 	HServerListRequest server_list_request = 0;
