@@ -144,6 +144,7 @@ private:
 	HashMap<StringName, Variant> member_default_values;
 	List<PropertyInfo> members_cache;
 	HashMap<StringName, Variant> member_default_values_cache;
+	HashMap<StringName, PropertyInfo> inherited_export_overrides;
 	Ref<GDScript> base_cache;
 	HashSet<ObjectID> inheriters_cache;
 	bool source_changed_cache = false;
@@ -188,6 +189,10 @@ private:
 
 	String _get_debug_path() const;
 	String generic_type_args;
+#ifdef TOOLS_ENABLED
+	Vector<StringName> generic_param_names;
+	HashMap<StringName, StringName> base_generic_args;
+#endif // TOOLS_ENABLED
 
 #ifdef TOOLS_ENABLED
 	HashSet<PlaceHolderScriptInstance *> placeholders;
@@ -231,6 +236,9 @@ public:
 	///
 	void set_generic_type_args(const String& p_args);
 	String get_generic_type_args() const;
+#ifdef TOOLS_ENABLED
+	Dictionary get_generic_chain_info() const;
+#endif // TOOLS_ENABLED
 
 	void clear();
 
@@ -270,6 +278,10 @@ public:
 
 	const HashMap<StringName, MemberInfo> &debug_get_member_indices() const { return member_indices; }
 	const HashMap<StringName, GDScriptFunction *> &debug_get_member_functions() const; //this is debug only
+#ifdef DEBUG_ENABLED
+	String get_function_disassembly(const StringName& p_function) const;
+	String get_disassembly() const;
+#endif
 	StringName debug_get_member_by_index(int p_idx) const;
 	StringName debug_get_static_var_by_index(int p_idx) const;
 

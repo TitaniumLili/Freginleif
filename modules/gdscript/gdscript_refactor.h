@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  line_3d.cpp                                                           */
+/*  gdscript_refactor.h                                                   */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -27,28 +27,39 @@
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
+/// Hey! This file was created for the Reginleif fork! It's not part of Godot upstream.
+/// Copyright (c) 2026 chesedcore (Monarch).
+/// Licensed under the MIT License, same terms as the Godot engine.
 
-#include "line_3d.h"
+#pragma once
 
-#include "core/object/class_db.h"
+#ifdef TOOLS_ENABLED
 
-PackedStringArray Line3D::get_configuration_warnings() const {
-	PackedStringArray warnings = VisualInstance3D::get_configuration_warnings();
-	EXPERIMENTAL_NODE_WARNING;
-	return warnings;
-}
+#include "core/string/ustring.h"
+#include "core/templates/vector.h"
+#include "core/variant/dictionary.h"
 
-void Line3D::_bind_methods() {
-	BIND_ENUM_CONSTANT(MESH_ALIGNMENT_LOCAL);
-	BIND_ENUM_CONSTANT(MESH_ALIGNMENT_BILLBOARD);
-	BIND_ENUM_CONSTANT(MESH_ALIGNMENT_MAX);
+class GDScriptRefactor {
+public:
+	struct Edit {
+		int start_line = 0;
+		int start_column = 0;
+		int end_line = 0;
+		int end_column = 0;
+		String text;
+	};
 
-	BIND_ENUM_CONSTANT(TILING_MODE_STRETCH);
-	BIND_ENUM_CONSTANT(TILING_MODE_TILE);
-	BIND_ENUM_CONSTANT(TILING_MAX);
+	struct ExtractResult {
+		bool ok = false;
+		String error;
+		Vector<Edit> edits;
+		String signature; ///for previewing the generated fn
+		int function_line = -1; ///0
+	};
 
-	BIND_ENUM_CONSTANT(MATERIAL_MODE_MIX);
-	BIND_ENUM_CONSTANT(MATERIAL_MODE_ADD);
-	BIND_ENUM_CONSTANT(MATERIAL_MODE_CUSTOM);
-	BIND_ENUM_CONSTANT(MATERIAL_MODE_MAX);
-}
+	static ExtractResult extract_function(const String& p_source, const String& p_path, int p_first_line, int p_last_line, const String& p_name);
+
+	static Dictionary extract_function_dict(const String& p_source, const String& p_path, int p_first_line, int p_last_line, const String& p_name);
+};
+
+#endif // TOOLS_ENABLED

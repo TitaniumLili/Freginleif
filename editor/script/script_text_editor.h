@@ -40,6 +40,8 @@
 #include "scene/gui/tree.h"
 
 class RichTextLabel;
+class LineEdit;
+class Label;
 
 class ConnectionInfoDialog : public AcceptDialog {
 	GDCLASS(ConnectionInfoDialog, AcceptDialog);
@@ -82,6 +84,21 @@ class ScriptTextEditor : public CodeEditorBase {
 	ScriptEditorQuickOpen *quick_open = nullptr;
 	ConnectionInfoDialog *connection_info_dialog = nullptr;
 
+	AcceptDialog* disassembly_dialog = nullptr;
+	CodeEdit* disassembly_text = nullptr;
+	void _show_disassembly();
+
+	ConfirmationDialog* extract_dialog = nullptr;
+	LineEdit* extract_name = nullptr;
+	Label* extract_signature = nullptr;
+	Label* extract_preview = nullptr;
+	int extract_first_line = 0;
+	int extract_last_line = 0;
+	Dictionary _call_extract_function(const String& p_name);
+	void _extract_function();
+	void _extract_function_preview();
+	void _extract_function_confirmed();
+
 	int connection_gutter = -1;
 	void _gutter_clicked(int p_line, int p_gutter);
 	void _update_gutter_indexes();
@@ -111,12 +128,16 @@ class ScriptTextEditor : public CodeEditorBase {
 		HELP_CONTEXTUAL,
 		LOOKUP_SYMBOL,
 		RENAME_SYMBOL,
+		SHOW_DISASSEMBLY,
+		EXTRACT_FUNCTION,
 	};
 
 	class EditMenusScTE : public EditMenusCEB {
 		GDCLASS(EditMenusScTE, EditMenusCEB);
 
 	protected:
+		MenuButton* reginleif_menu = nullptr;
+		void _reginleif_item_pressed(int p_id) { _edit_option(p_id); }
 		void _update_breakpoint_list() override;
 
 	public:

@@ -453,6 +453,11 @@ static GDScriptParser::DataType resolve_generic_type(const GDScriptParser::DataT
 	return resolve_generic_type(p_type_to_resolve, p_bindings, chain_resolved_so_far);
 }
 
+///public door momento
+GDScriptParser::DataType GDScriptAnalyzer::substitute_generic_bindings(const GDScriptParser::DataType& p_type, const HashMap<StringName, GDScriptParser::DataType>& p_bindings) {
+	return resolve_generic_type(p_type, p_bindings);
+}
+
 static bool has_unbound_generic_parameter(const GDScriptParser::DataType& p_type) {
 	if (p_type.kind == GDScriptParser::DataType::GENERIC_TYPE) {
 		return true;
@@ -981,6 +986,10 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 			if (p_class->extends_path.is_relative_path()) {
 				p_class->extends_path = class_type.script_path.get_base_dir().path_join(p_class->extends_path).simplify_path();
 			}
+			if (!p_class->extends_path.has_extension(GDScriptLanguage::get_singleton()->get_extension())) {
+				push_error(vformat(R"("%s" is not a GDScript.)", p_class->extends_path), p_class, p_class->extends_end_line, p_class->extends_start_column, p_class->extends_end_line, p_class->extends_end_column);
+				return ERR_PARSE_ERROR;
+			}
 			Ref<GDScriptParserRef> ext_parser = parser->get_depended_parser_for(p_class->extends_path);
 			if (ext_parser.is_null()) {
 				push_error(vformat(R"(Could not resolve super class path "%s".)", p_class->extends_path), p_class);
@@ -1010,11 +1019,11 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 			base.type_source = GDScriptParser::DataType::ANNOTATED_EXPLICIT;
 
 			if (ScriptServer::is_global_class(name)) {
-				String base_path = ScriptServer::get_global_class_path(name);
+				const String base_path = ScriptServer::get_global_class_path(name);
 
 				if (GDScript::is_canonically_equal_paths(base_path, parser->script_path)) {
 					base = parser->head->self_type;
-				} else {
+				} else if (base_path.has_extension(GDScriptLanguage::get_singleton()->get_extension())) {
 					Ref<GDScriptParserRef> base_parser = parser->get_depended_parser_for(base_path);
 					if (base_parser.is_null()) {
 						push_error(vformat(R"(Could not resolve super class "%s".)", name), id);
@@ -1034,6 +1043,9 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 #endif // DEBUG_ENABLED
 
 					base = base_parser->get_parser()->head->self_type;
+				} else {
+					push_error(vformat(R"(Global class %s is not a GDScript.)", name), id);
+					return ERR_PARSE_ERROR;
 				}
 			} else if (ProjectSettings::get_singleton()->has_autoload(name) && ProjectSettings::get_singleton()->get_autoload(name).is_singleton) {
 				const ProjectSettings::AutoloadInfo &info = ProjectSettings::get_singleton()->get_autoload(name);
@@ -1094,7 +1106,11 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 							case GDScriptParser::ClassNode::Member::CLASS:
 								break; // OK.
 							case GDScriptParser::ClassNode::Member::CONSTANT:
-								if (member_datatype.kind != GDScriptParser::DataType::SCRIPT && member_datatype.kind != GDScriptParser::DataType::CLASS) {
+								if (member_datatype.kind == GDScriptParser::DataType::SCRIPT) {
+									push_error(vformat(R"(%s is not a GDScript.)", name), id);
+									return ERR_PARSE_ERROR;
+								}
+								if (member_datatype.kind != GDScriptParser::DataType::CLASS) {
 									push_error(vformat(R"(Constant "%s" is not a preloaded script or class.)", name), id);
 									return ERR_PARSE_ERROR;
 								}
@@ -1140,8 +1156,12 @@ Error GDScriptAnalyzer::resolve_class_inheritance(GDScriptParser::ClassNode *p_c
 			if (!id_type.is_set()) {
 				push_error(vformat(R"(Could not find nested type "%s".)", id->name), id);
 				return ERR_PARSE_ERROR;
-			} else if (id_type.kind != GDScriptParser::DataType::SCRIPT && id_type.kind != GDScriptParser::DataType::CLASS) {
-				push_error(vformat(R"(Identifier "%s" is not a preloaded script or class.)", id->name), id);
+			} else if (id_type.kind != GDScriptParser::DataType::CLASS) {
+				if (id_type.kind == GDScriptParser::DataType::SCRIPT) {
+					push_error(vformat(R"(%s is not a GDScript.)", id->name), id);
+				} else {
+					push_error(vformat(R"(Identifier "%s" is not a preloaded script or class.)", id->name), id);
+				}
 				return ERR_PARSE_ERROR;
 			} else if (id_type.class_type == p_class) {
 				if (index == p_class->extends.size() - 1) {
@@ -1445,9 +1465,8 @@ GDScriptParser::DataType GDScriptAnalyzer::resolve_datatype(GDScriptParser::Type
 			if (GDScript::is_canonically_equal_paths(parser->script_path, ScriptServer::get_global_class_path(first))) {
 				result = parser->head->self_type;
 			} else {
-				String path = ScriptServer::get_global_class_path(first);
-				String ext = path.get_extension();
-				if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+				const String path = ScriptServer::get_global_class_path(first);
+				if (path.has_extension(GDScriptLanguage::get_singleton()->get_extension())) {
 					Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
 					if (ref.is_null() || ref->raise_status(GDScriptParserRef::INHERITANCE_SOLVED) != OK) {
 						push_error(vformat(R"(Could not parse global class "%s" from "%s".)", first, ScriptServer::get_global_class_path(first)), p_type);
@@ -1709,7 +1728,10 @@ void GDScriptAnalyzer::resolve_class_member(GDScriptParser::ClassNode *p_class, 
 		ensure_cached_external_parser_for_class(member.get_datatype().class_type, p_class, "Trying to resolve datatype of class member", p_source);
 		GDScriptParser::DataType member_type = member.get_datatype();
 		for (int i = 0; i < member_type.get_container_element_type_count(); ++i) {
-			ensure_cached_external_parser_for_class(member_type.get_container_element_type(i).class_type, p_class, "Trying to resolve datatype of class member", p_source);
+			ensure_cached_external_parsers_for_datatype(member_type.get_container_element_type(i), p_class, "Trying to resolve datatype of class member", p_source);
+		}
+		for (const KeyValue<StringName, GDScriptParser::DataType>& E : member_type.generic_type_bindings) {
+			ensure_cached_external_parsers_for_datatype(E.value, p_class, "Trying to resolve generic binding of class member", p_source);
 		}
 	});
 
@@ -2649,6 +2671,28 @@ void GDScriptAnalyzer::resolve_function_signature(GDScriptParser::FunctionNode *
 		BitField<MethodFlags> method_flags = {};
 		StringName native_base;
 		if (!p_is_lambda && get_function_signature(p_function, false, base_type, function_name, parent_return_type, parameters_types, default_par_count, method_flags, &native_base)) {
+
+			HashMap<StringName, GDScriptParser::DataType> parent_bindings(base_type.generic_type_bindings);
+			
+			///fold until you uhh get the parent that has that method
+			for (GDScriptParser::ClassNode* walk = base_type.class_type; walk != nullptr && !walk->has_member(function_name); walk = walk->base_type.class_type) {
+				HashMap<StringName, GDScriptParser::DataType> next_bindings;
+
+				for (const KeyValue<StringName, GDScriptParser::DataType>& E : walk->base_type.generic_type_bindings) {
+					next_bindings[E.key] = parent_bindings.is_empty() ? E.value : resolve_generic_type(E.value, parent_bindings);
+				}
+
+				parent_bindings = next_bindings;
+			}
+
+			
+			if (!parent_bindings.is_empty()) {
+				parent_return_type = resolve_generic_type(parent_return_type, parent_bindings);
+				for (GDScriptParser::DataType& parent_par : parameters_types) {
+					parent_par = resolve_generic_type(parent_par, parent_bindings);
+				}
+			}
+
 			bool valid = p_function->is_static == method_flags.has_flag(METHOD_FLAG_STATIC);
 
 			if (p_function->return_type == nullptr) {
@@ -3237,6 +3281,11 @@ void GDScriptAnalyzer::check_generic_assignable(GDScriptParser::IdentifierNode* 
 		return;
 	}
 
+	if (!default_is_null && !default_is_concrete) {
+		mark_node_unsafe(p_initializer);
+		return;
+	}
+
 	if (p_generic_decl->generic_upper_bound == nullptr) {
 		if (default_is_null) {
 			push_error(vformat(
@@ -3779,8 +3828,12 @@ void GDScriptAnalyzer::resolve_return(GDScriptParser::ReturnNode *p_return) {
 		}
 	}
 
-	if (has_expected_type && !expected_type.is_variant() && expected_type.is_hard_type()) {
-		if (result.is_variant() || !result.is_hard_type()) {
+	const bool expected_is_trait_bound = has_expected_type && expected_type.kind == GDScriptParser::DataType::TRAIT_OBJECT && !expected_type.trait_bound_names.is_empty();
+	const bool result_is_trait_bound = result.kind == GDScriptParser::DataType::TRAIT_OBJECT && !result.trait_bound_names.is_empty();
+
+	if (has_expected_type && (!expected_type.is_variant() || expected_is_trait_bound) && expected_type.is_hard_type()) {
+		
+		if ((result.is_variant() && !(expected_is_trait_bound && result_is_trait_bound)) || !result.is_hard_type()) {
 			p_return->use_conversion = true;
 			mark_node_unsafe(p_return);
 		} else if (!is_type_compatible(expected_type, result, true, p_return)) {
@@ -5131,6 +5184,10 @@ void GDScriptAnalyzer::reduce_call(GDScriptParser::CallNode *p_call, bool p_is_a
 			}
 		}
 
+		for (const KeyValue<StringName, GDScriptParser::DataType>& E : call_generic_bindings) {
+			ensure_cached_external_parsers_for_datatype(E.value, base_type.class_type, "Trying to resolve generic binding of call", p_call);
+		}
+
 		/// now we gotta seed call_generic_bindings from explicit type args given to us in the turbobrick
 
 		bool has_turbobrick = p_call->has_explicit_generic_args;
@@ -5661,9 +5718,8 @@ void GDScriptAnalyzer::reduce_get_node(GDScriptParser::GetNodeNode *p_get_node) 
 GDScriptParser::DataType GDScriptAnalyzer::make_global_class_meta_type(const StringName &p_class_name, const GDScriptParser::Node *p_source) const {
 	GDScriptParser::DataType type;
 
-	String path = ScriptServer::get_global_class_path(p_class_name);
-	String ext = path.get_extension();
-	if (ext == GDScriptLanguage::get_singleton()->get_extension()) {
+	const String path = ScriptServer::get_global_class_path(p_class_name);
+	if (path.has_extension(GDScriptLanguage::get_singleton()->get_extension())) {
 		Ref<GDScriptParserRef> ref = parser->get_depended_parser_for(path);
 		if (ref.is_null()) {
 			push_error(vformat(R"(Could not find script for class "%s".)", p_class_name), p_source);
@@ -5710,7 +5766,10 @@ Ref<GDScriptParserRef> GDScriptAnalyzer::ensure_cached_external_parser_for_class
 	}
 
 	Ref<GDScriptParserRef> parser_ref;
-	for (const GDScriptParser::ClassNode *look_class = p_from_class; look_class != nullptr; look_class = look_class->base_type.class_type) {
+
+	parser_ref = find_cached_external_parser_for_class(p_class, parser);
+
+	for (const GDScriptParser::ClassNode *look_class = p_from_class; parser_ref.is_null() && look_class != nullptr; look_class = look_class->base_type.class_type) {
 		if (parser->has_class(look_class)) {
 			parser_ref = find_cached_external_parser_for_class(p_class, parser);
 			if (parser_ref.is_valid()) {
@@ -5742,6 +5801,21 @@ Ref<GDScriptParserRef> GDScriptAnalyzer::ensure_cached_external_parser_for_class
 
 	external_class_parser_cache.insert(p_class, parser_ref);
 	return parser_ref;
+}
+
+void GDScriptAnalyzer::ensure_cached_external_parsers_for_datatype(const GDScriptParser::DataType& p_type, const GDScriptParser::ClassNode* p_from_class, const char* p_context, const GDScriptParser::Node* p_source, int p_depth) {
+	if (p_depth > 64) {
+		return;
+	}
+	if (p_type.class_type != nullptr) {
+		ensure_cached_external_parser_for_class(p_type.class_type, p_from_class, p_context, p_source);
+	}
+	for (int i = 0; i < p_type.get_container_element_type_count(); i++) {
+		ensure_cached_external_parsers_for_datatype(p_type.get_container_element_type(i), p_from_class, p_context, p_source, p_depth + 1);
+	}
+	for (const KeyValue<StringName, GDScriptParser::DataType>& E : p_type.generic_type_bindings) {
+		ensure_cached_external_parsers_for_datatype(E.value, p_from_class, p_context, p_source, p_depth + 1);
+	}
 }
 
 Ref<GDScriptParserRef> GDScriptAnalyzer::find_cached_external_parser_for_class(const GDScriptParser::ClassNode *p_class, const Ref<GDScriptParserRef> &p_dependant_parser) {
@@ -5989,6 +6063,9 @@ void GDScriptAnalyzer::reduce_identifier_from_base(GDScriptParser::IdentifierNod
 
 	HashMap<StringName, GDScriptParser::DataType> accumulated_bindings;
 	accumulated_bindings = base.generic_type_bindings;
+	for (const KeyValue<StringName, GDScriptParser::DataType>& E : accumulated_bindings) {
+		ensure_cached_external_parsers_for_datatype(E.value, base_class, "Trying to resolve generic binding of base type", p_identifier);
+	}
 
 	for (GDScriptParser::ClassNode *script_class : script_classes) {
 		if (p_base == nullptr && script_class->identifier && script_class->identifier->name == name) {
@@ -6112,6 +6189,9 @@ void GDScriptAnalyzer::reduce_identifier_from_base(GDScriptParser::IdentifierNod
 												resolve_generic_type(E.value, accumulated_bindings);
 				}
 				accumulated_bindings = next_level_bindings;
+				for (const KeyValue<StringName, GDScriptParser::DataType>& E : accumulated_bindings) {
+					ensure_cached_external_parsers_for_datatype(E.value, base_class, "Trying to resolve generic binding of base type", p_identifier);
+				}
 			}
 
 		}
@@ -8383,6 +8463,11 @@ bool GDScriptAnalyzer::check_type_compatibility(const GDScriptParser::DataType &
 		if (same_generic_owner) {
 			return p_target == p_source;
 		}
+
+		if (is_generic_in_open_context(p_target, p_class) || is_generic_fn_in_open_context(p_target, p_func)) {
+			return false;
+		}
+		
 		return true;
 	}
 	

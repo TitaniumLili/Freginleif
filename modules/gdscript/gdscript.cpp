@@ -47,6 +47,7 @@
 
 #ifdef TOOLS_ENABLED
 #include "editor/gdscript_docgen.h"
+#include "gdscript_refactor.h"
 #endif
 
 #ifdef TESTS_ENABLED
@@ -290,6 +291,23 @@ String GDScript::get_generic_type_args() const {
 	return generic_type_args;
 }
 
+#ifdef TOOLS_ENABLED
+Dictionary GDScript::get_generic_chain_info() const {
+	PackedStringArray params;
+	for (const StringName& name : generic_param_names) {
+		params.push_back(String(name));
+	}
+	Dictionary base_args;
+	for (const KeyValue<StringName, StringName>& E : base_generic_args) {
+		base_args[String(E.key)] = String(E.value);
+	}
+	Dictionary info;
+	info["params"] = params;
+	info["base_args"] = base_args;
+	return info;
+}
+#endif // TOOLS_ENABLED
+
 StringName GDScript::get_instance_base_type() const {
 	if (native.is_valid()) {
 		return native->get_name();
@@ -487,6 +505,19 @@ void GDScript::_update_exports_values(HashMap<StringName, Variant> &values, List
 
 	if (base_cache.is_valid()) {
 		base_cache->_update_exports_values(values, propnames);
+
+		if (!inherited_export_overrides.is_empty()) {
+			for (PropertyInfo& pi : propnames) {
+				const PropertyInfo* specialised = inherited_export_overrides.getptr(pi.name);
+				if (specialised != nullptr) {
+					pi.type = specialised->type;
+					pi.hint = specialised->hint;
+					pi.hint_string = specialised->hint_string;
+					pi.class_name = specialised->class_name;
+					pi.usage = specialised->usage;
+				}
+			}
+		}
 	}
 }
 
@@ -570,6 +601,9 @@ bool GDScript::_update_exports(bool *r_err, bool p_recursive_call, PlaceHolderSc
 			_signals.clear();
 
 			members_cache.push_back(get_class_category());
+
+			inherited_export_overrides.clear();
+			GDScriptCompiler::collect_specialized_generic_exports(c, inherited_export_overrides);
 
 			for (const GDScriptParser::ClassNode::Member &member : c->members) {
 				switch (member.type) {
@@ -1115,7 +1149,15 @@ void GDScript::_bind_methods() {
 	///TODO: replace with gdtype when i can be assed to. the migration could be anytime soon, eh?
 	ClassDB::bind_method(D_METHOD("set_generic_type_args", "args"), &GDScript::set_generic_type_args);
 	ClassDB::bind_method(D_METHOD("get_generic_type_args"), &GDScript::get_generic_type_args);
+#ifdef TOOLS_ENABLED
+	ClassDB::bind_method(D_METHOD("get_generic_chain_info"), &GDScript::get_generic_chain_info);
+	ClassDB::bind_static_method("GDScript", D_METHOD("extract_function", "source", "path", "first_line", "last_line", "name"), &GDScriptRefactor::extract_function_dict);
+#endif // TOOLS_ENABLED
 	ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "new", &GDScript::_new, MethodInfo("new"));
+#ifdef DEBUG_ENABLED
+	ClassDB::bind_method(D_METHOD("get_function_disassembly", "function"), &GDScript::get_function_disassembly);
+	ClassDB::bind_method(D_METHOD("get_disassembly"), &GDScript::get_disassembly);
+#endif
 }
 
 void GDScript::set_path_cache(const String &p_path) {
@@ -3122,6 +3164,7 @@ GDScriptLanguage::GDScriptLanguage() {
 	track_locals = track_locals || EngineDebugger::is_active();
 
 	GLOBAL_DEF("debug/gdscript/warnings/enable", true);
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "reginleif/editor/scope_style", PROPERTY_HINT_ENUM, "Indentation,Braces"), 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::DICTIONARY,
 					   "debug/gdscript/warnings/directory_rules",

@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  line_3d.h                                                             */
+/*  test_item_list.cpp                                                    */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -28,39 +28,79 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#pragma once
+#include "tests/test_macros.h"
 
-#include "scene/3d/visual_instance_3d.h"
+TEST_FORCE_LINK(test_item_list)
 
-class Line3D : public GeometryInstance3D {
-	GDCLASS(Line3D, GeometryInstance3D);
+#ifndef ADVANCED_GUI_DISABLED
 
-protected:
-	static void _bind_methods();
+#include "scene/gui/item_list.h"
+#include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
+#include "tests/display_server_mock.h"
 
-public:
-	enum MeshAlignment {
-		MESH_ALIGNMENT_LOCAL,
-		MESH_ALIGNMENT_BILLBOARD,
-		MESH_ALIGNMENT_MAX,
-	};
+namespace TestItemList {
 
-	enum TilingMode {
-		TILING_MODE_STRETCH,
-		TILING_MODE_TILE,
-		TILING_MAX,
-	};
+TEST_CASE("[SceneTree][ItemList] Arrow keys after incremental search") {
+	ItemList *list = memnew(ItemList);
+	list->set_size(Size2(200, 200));
+	list->add_item("apple");
+	list->add_item("Banana");
+	list->add_item("avocado");
+	list->add_item("cherry");
+	SceneTree::get_singleton()->get_root()->add_child(list);
+	list->grab_focus();
 
-	enum MaterialMode {
-		MATERIAL_MODE_MIX,
-		MATERIAL_MODE_ADD,
-		MATERIAL_MODE_CUSTOM,
-		MATERIAL_MODE_MAX,
-	};
+	SUBCASE("Arrow keys move to the next match, ignoring case") {
+		// Key::A types an uppercase "A", items are lowercase.
+		SEND_GUI_KEY_EVENT(Key::A);
+		CHECK_EQ(list->get_current(), 0);
 
-	PackedStringArray get_configuration_warnings() const override;
-};
+		SEND_GUI_KEY_EVENT(Key::DOWN);
+		SEND_GUI_KEY_UP_EVENT(Key::DOWN);
+		CHECK_EQ(list->get_current(), 2);
 
-VARIANT_ENUM_CAST(Line3D::TilingMode)
-VARIANT_ENUM_CAST(Line3D::MeshAlignment)
-VARIANT_ENUM_CAST(Line3D::MaterialMode)
+		SEND_GUI_KEY_EVENT(Key::UP);
+		SEND_GUI_KEY_UP_EVENT(Key::UP);
+		CHECK_EQ(list->get_current(), 0);
+	}
+
+	SUBCASE("Down arrow still navigates when there is no next match") {
+		SEND_GUI_KEY_EVENT(Key::B);
+		CHECK_EQ(list->get_current(), 1);
+
+		SEND_GUI_KEY_EVENT(Key::DOWN);
+		SEND_GUI_KEY_UP_EVENT(Key::DOWN);
+		CHECK_EQ(list->get_current(), 2);
+	}
+
+	SUBCASE("Up arrow still navigates when there is no previous match") {
+		SEND_GUI_KEY_EVENT(Key::B);
+		CHECK_EQ(list->get_current(), 1);
+
+		SEND_GUI_KEY_EVENT(Key::UP);
+		SEND_GUI_KEY_UP_EVENT(Key::UP);
+		CHECK_EQ(list->get_current(), 0);
+	}
+
+	SUBCASE("Arrow keys navigate normally once the matches run out") {
+		SEND_GUI_KEY_EVENT(Key::A);
+		SEND_GUI_KEY_EVENT(Key::DOWN);
+		SEND_GUI_KEY_UP_EVENT(Key::DOWN);
+		SEND_GUI_KEY_EVENT(Key::DOWN);
+		SEND_GUI_KEY_UP_EVENT(Key::DOWN);
+		CHECK_EQ(list->get_current(), 3);
+
+		SEND_GUI_KEY_EVENT(Key::UP);
+		SEND_GUI_KEY_UP_EVENT(Key::UP);
+		SEND_GUI_KEY_EVENT(Key::UP);
+		SEND_GUI_KEY_UP_EVENT(Key::UP);
+		CHECK_EQ(list->get_current(), 1);
+	}
+
+	memdelete(list);
+}
+
+} // namespace TestItemList
+
+#endif // ADVANCED_GUI_DISABLED
